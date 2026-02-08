@@ -93,7 +93,7 @@ Watchdog (file monitor) -> Debounce (5min) -> Git Commit -> Restic Backup -> Not
 
 ## Testing
 
-114 tests, 93-100% coverage on testable modules. Tests use real HTTP servers for webhook verification and `mock_subprocess` for git/restic operations.
+145 tests, 93-100% coverage on testable modules. Tests use real HTTP servers for webhook verification and `mock_subprocess` for git/restic operations.
 
 ```bash
 uv run --extra dev pytest -v                                    # All tests
