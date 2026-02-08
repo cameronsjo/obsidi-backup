@@ -9,22 +9,42 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pythonjsonlogger.json import JsonFormatter
+
+from vault_backup import __version__
 from vault_backup.backup import run_backup
 from vault_backup.config import Config
 from vault_backup.health import HealthServer
 from vault_backup.notify import Notifier
 from vault_backup.watcher import VaultWatcher
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%SZ",
-)
-log = logging.getLogger("vault_backup")
 
-# Quiet watchdog logging
-logging.getLogger("watchdog").setLevel(logging.WARNING)
+def _configure_logging() -> None:
+    """Configure structured JSON logging to stdout."""
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = JsonFormatter(
+        fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+        rename_fields={
+            "asctime": "timestamp",
+            "levelname": "level",
+            "name": "logger",
+        },
+        static_fields={"service": "vault-backup", "version": __version__},
+        timestamp=True,
+    )
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+    # Quiet watchdog logging
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
+
+
+_configure_logging()
+log = logging.getLogger("vault_backup")
 
 
 GITIGNORE_CONTENT = """\
@@ -56,13 +76,15 @@ def validate_environment() -> None:
 
     missing = [var for var in required if not os.environ.get(var)]
     if missing:
-        log.error("Missing required environment variables: %s", ", ".join(missing))
+        log.error("Missing required environment variables", extra={"missing": missing})
         sys.exit(1)
+    log.info("Environment validated")
 
 
 def initialize_state_dir(state_dir: Path) -> None:
     """Create state directory and initialize state files."""
     state_dir.mkdir(parents=True, exist_ok=True)
+    log.info("State directory initialized", extra={"state_dir": str(state_dir)})
 
     # Initialize state files with defaults
     defaults = {
@@ -81,11 +103,11 @@ def initialize_state_dir(state_dir: Path) -> None:
 def validate_vault(vault_path: Path) -> None:
     """Validate vault directory exists and is writable."""
     if not vault_path.exists():
-        log.error("Vault directory does not exist: %s", vault_path)
+        log.error("Vault directory does not exist", extra={"vault_path": str(vault_path)})
         sys.exit(1)
 
     if not vault_path.is_dir():
-        log.error("Vault path is not a directory: %s", vault_path)
+        log.error("Vault path is not a directory", extra={"vault_path": str(vault_path)})
         sys.exit(1)
 
     # Check writable
@@ -94,10 +116,12 @@ def validate_vault(vault_path: Path) -> None:
         test_file.touch()
         test_file.unlink()
     except PermissionError:
-        log.error("Vault directory is not writable: %s", vault_path)
-        log.error("The backup service requires write access to create git commits")
-        log.error("Remove ':ro' from the volume mount in your compose file")
+        log.error(
+            "Vault directory is not writable. Remove ':ro' from the volume mount",
+            extra={"vault_path": str(vault_path)},
+        )
         sys.exit(1)
+    log.info("Vault validated", extra={"vault_path": str(vault_path)})
 
 
 def initialize_git(config: Config) -> None:
@@ -146,9 +170,12 @@ def check_restic(config: Config) -> None:
         text=True,
     )
     if result.returncode != 0:
-        log.warning("Restic repository not found or not initialized")
-        log.warning("Run 'restic init' to initialize the repository")
-        log.warning("Continuing without backup functionality until initialized")
+        log.warning(
+            "Restic repository not found. Run 'restic init' to initialize. "
+            "Continuing without backup functionality"
+        )
+    else:
+        log.info("Restic repository verified")
 
 
 def main() -> None:
@@ -160,6 +187,18 @@ def main() -> None:
 
     # Load configuration
     config = Config.from_env()
+    log.info(
+        "Configuration loaded",
+        extra={
+            "vault_path": config.vault_path,
+            "state_dir": config.state_dir,
+            "debounce_seconds": config.debounce_seconds,
+            "health_port": config.health_port,
+            "dry_run": config.dry_run,
+            "ai_commits": config.llm.enabled,
+            "notifications": config.notify.enabled,
+        },
+    )
 
     if config.dry_run:
         log.warning("DRY RUN MODE - no actual commits or backups will be made")
@@ -185,15 +224,22 @@ def main() -> None:
     # Backup callback for watcher
     def on_changes() -> None:
         """Called by watcher when changes are detected and debounce period elapses."""
-        result = run_backup(config, state_dir)
+        try:
+            result = run_backup(config, state_dir)
 
-        if result.success and result.backup_created:
-            notifier.success(
-                "Vault Backup Complete",
-                f"Committed and backed up: {result.changes_summary}",
+            if result.success and result.backup_created:
+                notifier.success(
+                    "Vault Backup Complete",
+                    f"Committed and backed up: {result.changes_summary}",
+                )
+            elif not result.success:
+                notifier.error("Vault Backup Failed", result.error or "Unknown error")
+        except Exception:
+            log.exception("Unexpected error during backup")
+            notifier.error(
+                "Vault Backup Error",
+                "Unexpected error during backup — check container logs",
             )
-        elif not result.success:
-            notifier.error("Vault Backup Failed", result.error or "Unknown error")
 
     # Start health server
     health_server = HealthServer(config)
@@ -221,6 +267,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown_handler)
 
     log.info("Vault backup sidecar ready")
+    notifier.success(
+        "Vault Backup Online",
+        f"Watching `{config.vault_path}` (debounce: {config.debounce_seconds}s)",
+    )
 
     # Wait for watcher (blocks until shutdown)
     try:
