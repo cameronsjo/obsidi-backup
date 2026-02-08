@@ -9,10 +9,30 @@ from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from vault_backup import __version__
+
 if TYPE_CHECKING:
     from vault_backup.config import NotifyConfig
 
 log = logging.getLogger(__name__)
+
+_USER_AGENT = f"ObsidianBackup/{__version__}"
+
+
+def _post_json(url: str, payload: dict) -> bool:
+    """POST JSON to a URL. Returns True if successful."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return resp.status < 400
 
 
 class NotificationProvider(ABC):
@@ -59,19 +79,8 @@ class DiscordWebhook(NotificationProvider):
             payload["username"] = self.username
         if self.avatar_url:
             payload["avatar_url"] = self.avatar_url
-        return self._post(payload)
-
-    def _post(self, payload: dict) -> bool:
         try:
-            data = json.dumps(payload).encode()
-            req = urllib.request.Request(
-                self.webhook_url,
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status < 400
+            return _post_json(self.webhook_url, payload)
         except Exception:
             log.warning("Failed to send Discord notification", exc_info=True)
             return False
@@ -97,19 +106,8 @@ class SlackWebhook(NotificationProvider):
                 },
             ]
         }
-        return self._post(payload)
-
-    def _post(self, payload: dict) -> bool:
         try:
-            data = json.dumps(payload).encode()
-            req = urllib.request.Request(
-                self.webhook_url,
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status < 400
+            return _post_json(self.webhook_url, payload)
         except Exception:
             log.warning("Failed to send Slack notification", exc_info=True)
             return False
@@ -131,19 +129,8 @@ class GenericWebhook(NotificationProvider):
             "status": "error" if is_error else "success",
             "timestamp": datetime.now(UTC).isoformat(),
         }
-        return self._post(payload)
-
-    def _post(self, payload: dict) -> bool:
         try:
-            data = json.dumps(payload).encode()
-            req = urllib.request.Request(
-                self.webhook_url,
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status < 400
+            return _post_json(self.webhook_url, payload)
         except Exception:
             log.warning("Failed to send webhook notification", exc_info=True)
             return False

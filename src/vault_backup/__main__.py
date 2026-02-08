@@ -66,10 +66,12 @@ Thumbs.db
 
 
 def validate_environment() -> None:
-    """Validate required environment variables."""
+    """Validate required environment variables.
+
+    Only RESTIC_REPOSITORY and RESTIC_PASSWORD are universally required.
+    Backend-specific vars (Azure, S3, B2, etc.) are validated by restic itself.
+    """
     required = [
-        "AZURE_ACCOUNT_NAME",
-        "AZURE_ACCOUNT_KEY",
         "RESTIC_REPOSITORY",
         "RESTIC_PASSWORD",
     ]
@@ -78,7 +80,9 @@ def validate_environment() -> None:
     if missing:
         log.error("Missing required environment variables", extra={"missing": missing})
         sys.exit(1)
-    log.info("Environment validated")
+
+    repo = os.environ["RESTIC_REPOSITORY"]
+    log.info("Environment validated", extra={"restic_repository": repo.split(":")[0] + ":***"})
 
 
 def initialize_state_dir(state_dir: Path) -> None:

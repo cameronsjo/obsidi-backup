@@ -11,10 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vault_backup import __version__
+
 if TYPE_CHECKING:
     from vault_backup.config import Config
 
 log = logging.getLogger(__name__)
+
+_USER_AGENT = f"ObsidianBackup/{__version__}"
 
 
 @dataclass
@@ -102,6 +106,7 @@ def _call_anthropic(config: Config, prompt: str) -> str | None:
         data=data,
         headers={
             "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
             "x-api-key": config.llm.anthropic_api_key,
             "anthropic-version": "2023-06-01",
         },
@@ -132,7 +137,10 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
         "messages": [{"role": "user", "content": prompt}],
     }
 
-    headers = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "User-Agent": _USER_AGENT,
+    }
     if config.llm.llm_api_key:
         headers["Authorization"] = f"Bearer {config.llm.llm_api_key}"
 
