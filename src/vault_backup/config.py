@@ -133,6 +133,10 @@ class Config:
     # Feature flags
     dry_run: bool = False
 
+    # Observability
+    sentry_dsn: str | None = None
+    sentry_environment: str = "production"
+
     # Sub-configs
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -148,6 +152,8 @@ class Config:
             git_user_name=os.environ.get("GIT_USER_NAME", "Obsidian Backup"),
             git_user_email=os.environ.get("GIT_USER_EMAIL", "backup@local"),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("true", "1", "yes"),
+            sentry_dsn=os.environ.get("SENTRY_DSN"),
+            sentry_environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
             retention=RetentionPolicy.from_env(),
             llm=LLMConfig.from_env(),
             notify=NotifyConfig.from_env(),

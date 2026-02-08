@@ -202,6 +202,22 @@ def main() -> None:
         sys.exit(1)
 
 
+def _init_sentry(config: Config) -> None:
+    """Initialize Sentry error tracking if DSN is configured."""
+    if not config.sentry_dsn:
+        return
+
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=config.sentry_dsn,
+        release=f"vault-backup@{__version__}",
+        environment=config.sentry_environment,
+        traces_sample_rate=0,
+    )
+    log.info("Sentry initialized", extra={"environment": config.sentry_environment})
+
+
 def _run() -> None:
     """Run the backup sidecar."""
     log.info("Starting Obsidian Vault Backup sidecar")
@@ -211,6 +227,10 @@ def _run() -> None:
 
     # Load configuration
     config = Config.from_env()
+
+    # Initialize Sentry early so it captures all subsequent errors
+    _init_sentry(config)
+
     log.info(
         "Configuration loaded",
         extra={
@@ -221,6 +241,7 @@ def _run() -> None:
             "dry_run": config.dry_run,
             "ai_commits": config.llm.enabled,
             "notifications": config.notify.enabled,
+            "sentry": bool(config.sentry_dsn),
         },
     )
 

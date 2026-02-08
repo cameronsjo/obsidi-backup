@@ -131,6 +131,8 @@ class TestConfig:
         assert config.debounce_seconds == 300
         assert config.health_port == 8080
         assert config.dry_run is False
+        assert config.sentry_dsn is None
+        assert config.sentry_environment == "production"
 
     def test_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("VAULT_PATH", "/my/vault")
@@ -174,6 +176,13 @@ class TestConfig:
         config = Config()
         with pytest.raises(AttributeError):
             config.vault_path = "/other"  # type: ignore[misc]
+
+    def test_sentry_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://key@sentry.io/123")
+        monkeypatch.setenv("SENTRY_ENVIRONMENT", "staging")
+        config = Config.from_env()
+        assert config.sentry_dsn == "https://key@sentry.io/123"
+        assert config.sentry_environment == "staging"
 
     def test_sub_configs_loaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RETENTION_DAILY", "30")
