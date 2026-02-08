@@ -80,10 +80,8 @@ class TestGetChangesSummary:
 
 class TestParseSnapshotId:
     def test_parses_standard_output(self) -> None:
-        """BUG: Returns 'snapshot' instead of the ID because 'snapshot' is 8 alnum chars."""
         output = "snapshot ab12cd34 saved"
-        # Should be "ab12cd34" but "snapshot" matches first (8 chars, alnum)
-        assert _parse_snapshot_id(output) == "snapshot"
+        assert _parse_snapshot_id(output) == "ab12cd34"
 
     def test_returns_none_for_no_match(self) -> None:
         assert _parse_snapshot_id("no snapshot here") is None
@@ -92,13 +90,12 @@ class TestParseSnapshotId:
         assert _parse_snapshot_id("") is None
 
     def test_multiline_output(self) -> None:
-        """BUG: Same issue — 'snapshot' matched before the actual ID."""
         output = """Files:         245 new,     0 changed,     0 unmodified
 Added to the repository: 12.345 MiB (6.789 MiB stored)
 
 processed 245 files, 23.456 MiB in 0:02
 snapshot ef56gh78 saved"""
-        assert _parse_snapshot_id(output) == "snapshot"
+        assert _parse_snapshot_id(output) == "ef56gh78"
 
 
 class TestGenerateAiCommitMessage:
@@ -147,7 +144,7 @@ class TestGenerateAiCommitMessage:
             assert result is None
 
     def test_anthropic_empty_content_list(self, config_with_llm: Config) -> None:
-        """BUG(ebg): Empty content list causes IndexError."""
+        """Empty content list returns None gracefully."""
         mock_response = json.dumps({"content": []}).encode()
 
         with patch("vault_backup.backup.urllib.request.urlopen") as mock_urlopen:
@@ -156,16 +153,13 @@ class TestGenerateAiCommitMessage:
             mock_urlopen.return_value.read.return_value = mock_response
             mock_urlopen.return_value.status = 200
 
-            # This currently raises IndexError - caught by generate_ai_commit_message's
-            # except Exception, so it returns None. But it's still a latent bug.
             result = generate_ai_commit_message(
                 config_with_llm, ["file.md"], "1 file changed"
             )
-            # Falls through to None via the except handler
             assert result is None
 
     def test_openai_empty_choices_list(self, config_with_openai: Config) -> None:
-        """BUG(ebg): Empty choices list causes IndexError."""
+        """Empty choices list returns None gracefully."""
         mock_response = json.dumps({"choices": []}).encode()
 
         with patch("vault_backup.backup.urllib.request.urlopen") as mock_urlopen:

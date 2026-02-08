@@ -31,9 +31,9 @@ class TestRetentionPolicy:
         assert policy.daily == 7
 
     def test_from_env_invalid_value_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """BUG(lpg): Non-numeric values crash with unhandled ValueError."""
+        """Non-numeric values raise a clear ValueError."""
         monkeypatch.setenv("RETENTION_DAILY", "abc")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="RETENTION_DAILY must be an integer"):
             RetentionPolicy.from_env()
 
     def test_frozen(self) -> None:
@@ -159,15 +159,15 @@ class TestConfig:
             assert Config.from_env().dry_run is False
 
     def test_invalid_debounce_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """BUG(lpg): Non-numeric DEBOUNCE_SECONDS crashes with unhandled ValueError."""
+        """Non-numeric DEBOUNCE_SECONDS raises a clear ValueError."""
         monkeypatch.setenv("DEBOUNCE_SECONDS", "not-a-number")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="DEBOUNCE_SECONDS must be an integer"):
             Config.from_env()
 
     def test_invalid_health_port_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """BUG(lpg): Non-numeric HEALTH_PORT crashes with unhandled ValueError."""
+        """Non-numeric HEALTH_PORT raises a clear ValueError."""
         monkeypatch.setenv("HEALTH_PORT", "abc")
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="HEALTH_PORT must be an integer"):
             Config.from_env()
 
     def test_frozen(self) -> None:

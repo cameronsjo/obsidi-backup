@@ -115,7 +115,11 @@ def _call_anthropic(config: Config, prompt: str) -> str | None:
 
     with urllib.request.urlopen(req, timeout=10) as resp:
         result = json.loads(resp.read().decode())
-        message = result.get("content", [{}])[0].get("text")
+        content = result.get("content", [])
+        if not content:
+            log.warning("Anthropic response had empty content list")
+            return None
+        message = content[0].get("text")
         log.info("AI commit message generated", extra={"provider": "anthropic", "message": message})
         return message
 
@@ -154,7 +158,11 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
 
     with urllib.request.urlopen(req, timeout=10) as resp:
         result = json.loads(resp.read().decode())
-        message = result.get("choices", [{}])[0].get("message", {}).get("content")
+        choices = result.get("choices", [])
+        if not choices:
+            log.warning("OpenAI response had empty choices list")
+            return None
+        message = choices[0].get("message", {}).get("content")
         log.info(
             "AI commit message generated",
             extra={"provider": "openai-compatible", "message": message},
@@ -239,13 +247,19 @@ def restic_backup(config: Config, vault_path: Path) -> bool:
 
 
 def _parse_snapshot_id(restic_output: str) -> str | None:
-    """Extract snapshot ID from restic backup output."""
+    """Extract snapshot ID from restic backup output.
+
+    Restic output format: "snapshot ab12cd34 saved"
+    The ID is the word immediately after "snapshot".
+    """
     for line in restic_output.strip().split("\n"):
         if "snapshot" in line and "saved" in line:
             parts = line.split()
-            for part in parts:
-                if len(part) == 8 and part.isalnum():
-                    return part
+            try:
+                idx = parts.index("snapshot")
+                return parts[idx + 1]
+            except (ValueError, IndexError):
+                continue
     return None
 
 

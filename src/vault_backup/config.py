@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Self
+
+log = logging.getLogger(__name__)
+
+
+def _int_env(name: str, default: int) -> int:
+    """Parse an integer environment variable with validation."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        msg = f"Environment variable {name} must be an integer, got {raw!r}"
+        raise ValueError(msg) from None
 
 
 class NotifyLevel(Enum):
@@ -28,9 +43,9 @@ class RetentionPolicy:
     @classmethod
     def from_env(cls) -> Self:
         return cls(
-            daily=int(os.environ.get("RETENTION_DAILY", "7")),
-            weekly=int(os.environ.get("RETENTION_WEEKLY", "4")),
-            monthly=int(os.environ.get("RETENTION_MONTHLY", "12")),
+            daily=_int_env("RETENTION_DAILY", 7),
+            weekly=_int_env("RETENTION_WEEKLY", 4),
+            monthly=_int_env("RETENTION_MONTHLY", 12),
         )
 
 
@@ -128,8 +143,8 @@ class Config:
         return cls(
             vault_path=os.environ.get("VAULT_PATH", "/vault"),
             state_dir=os.environ.get("STATE_DIR", "/app/state"),
-            debounce_seconds=int(os.environ.get("DEBOUNCE_SECONDS", "300")),
-            health_port=int(os.environ.get("HEALTH_PORT", "8080")),
+            debounce_seconds=_int_env("DEBOUNCE_SECONDS", 300),
+            health_port=_int_env("HEALTH_PORT", 8080),
             git_user_name=os.environ.get("GIT_USER_NAME", "Obsidian Backup"),
             git_user_email=os.environ.get("GIT_USER_EMAIL", "backup@local"),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("true", "1", "yes"),

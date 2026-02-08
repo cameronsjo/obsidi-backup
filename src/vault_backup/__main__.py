@@ -133,10 +133,17 @@ def initialize_git(config: Config) -> None:
     vault_path = Path(config.vault_path)
 
     # Mark directory as safe (required for Git 2.35.2+)
-    subprocess.run(
-        ["git", "config", "--global", "--add", "safe.directory", str(vault_path)],
-        check=True,
+    # Uses --system to avoid polluting user's global git config (biz)
+    # Falls back to --global if --system fails (no permissions outside container)
+    sys_result = subprocess.run(
+        ["git", "config", "--system", "--add", "safe.directory", str(vault_path)],
+        capture_output=True,
     )
+    if sys_result.returncode != 0:
+        subprocess.run(
+            ["git", "config", "--global", "--add", "safe.directory", str(vault_path)],
+            check=True,
+        )
 
     git_dir = vault_path / ".git"
     if not git_dir.exists():
@@ -184,6 +191,19 @@ def check_restic(config: Config) -> None:
 
 def main() -> None:
     """Main entry point."""
+    try:
+        _run()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        log.exception("Fatal error in vault backup sidecar")
+        sys.exit(1)
+
+
+def _run() -> None:
+    """Run the backup sidecar."""
     log.info("Starting Obsidian Vault Backup sidecar")
 
     # Validate environment
@@ -277,10 +297,7 @@ def main() -> None:
     )
 
     # Wait for watcher (blocks until shutdown)
-    try:
-        watcher.wait()
-    except KeyboardInterrupt:
-        pass
+    watcher.wait()
 
 
 if __name__ == "__main__":
