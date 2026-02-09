@@ -38,6 +38,9 @@ Watchdog (file monitor) -> Debounce (5min) -> Git Commit -> Restic Backup -> Not
 - `backup.py` - Git commit, restic backup, LLM commit messages
 - `config.py` - Frozen dataclass configuration from environment variables
 - `health.py` - HTTP `/health` and `/ready` endpoints with thread-safe state
+- `ui.py` - htmx-powered web UI at `/ui` for browsing snapshots and restoring files
+- `restore.py` - Git and restic restore operations (shared by CLI and UI)
+- `restore_cli.py` - CLI for browsing and restoring (`vault-backup-restore`)
 - `notify.py` - Discord/Slack/generic webhook notifications via `_post_json()`
 
 ## Key Decisions
@@ -93,7 +96,7 @@ Watchdog (file monitor) -> Debounce (5min) -> Git Commit -> Restic Backup -> Not
 
 ## Testing
 
-179 tests, 93-100% coverage on testable modules. Tests use real HTTP servers for webhook verification and `mock_subprocess` for git/restic operations.
+227 tests, 93-100% coverage on testable modules. Tests use real HTTP servers for webhook and UI verification, and `mock_subprocess` for git/restic operations.
 
 ```bash
 uv run --extra dev pytest -v                                    # All tests

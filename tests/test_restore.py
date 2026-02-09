@@ -19,6 +19,7 @@ from vault_backup.restore import (
     git_show_file,
     restic_ls,
     restic_restore_file,
+    restic_show_file,
     restic_snapshots,
 )
 
@@ -251,6 +252,19 @@ class TestResticLs:
         mock_subprocess.return_value.returncode = 0
         entries = restic_ls("abcdef12")
         assert len(entries) == 2
+
+
+class TestResticShowFile:
+    def test_returns_content(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = "# Note content\n"
+        mock_subprocess.return_value.returncode = 0
+        content = restic_show_file("abcdef12", "/vault/note.md")
+        assert content == "# Note content\n"
+
+    def test_raises_on_failure(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.returncode = 1
+        with pytest.raises(FileNotFoundError, match="not found in snapshot"):
+            restic_show_file("abcdef12", "/vault/gone.md")
 
 
 class TestResticRestoreFile:

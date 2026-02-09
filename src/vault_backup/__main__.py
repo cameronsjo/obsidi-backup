@@ -16,6 +16,7 @@ from vault_backup.backup import run_backup
 from vault_backup.config import Config
 from vault_backup.health import HealthServer
 from vault_backup.notify import Notifier
+from vault_backup.ui import RestoreHandler
 from vault_backup.watcher import VaultWatcher
 
 
@@ -286,8 +287,8 @@ def _run() -> None:
                 "Unexpected error during backup — check container logs",
             )
 
-    # Start health server
-    health_server = HealthServer(config)
+    # Start health server with restore UI
+    health_server = HealthServer(config, handler_class=RestoreHandler)
     health_server.start()
 
     # Start watcher

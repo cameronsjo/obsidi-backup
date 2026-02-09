@@ -189,8 +189,13 @@ class HealthHandler(BaseHTTPRequestHandler):
 class HealthServer:
     """Health HTTP server running in a background thread."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: Config,
+        handler_class: type[BaseHTTPRequestHandler] = HealthHandler,
+    ) -> None:
         self.config = config
+        self.handler_class = handler_class
         self.server: HTTPServer | None = None
         self.thread: threading.Thread | None = None
 
@@ -200,7 +205,7 @@ class HealthServer:
         with _health_state_lock:
             _health_state = HealthState(config=self.config)
 
-        self.server = HTTPServer(("0.0.0.0", self.config.health_port), HealthHandler)
+        self.server = HTTPServer(("0.0.0.0", self.config.health_port), self.handler_class)
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
         log.info(

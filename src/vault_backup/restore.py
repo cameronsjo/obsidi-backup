@@ -198,6 +198,22 @@ def restic_ls(snapshot_id: str, path: str = "/") -> list[ResticEntry]:
     return entries
 
 
+def restic_show_file(snapshot_id: str, filepath: str) -> str:
+    """Retrieve file content from a restic snapshot without writing to disk."""
+    log.debug(
+        "Showing file from restic",
+        extra={"snapshot_id": snapshot_id, "filepath": filepath},
+    )
+    result = run_cmd(
+        ["restic", "dump", snapshot_id, filepath],
+        check=False,
+    )
+    if result.returncode != 0:
+        msg = f"File '{filepath}' not found in snapshot {snapshot_id}"
+        raise FileNotFoundError(msg)
+    return result.stdout
+
+
 def restic_restore_file(snapshot_id: str, filepath: str, target: Path) -> Path:
     """Restore a single file from a restic snapshot using dump."""
     log.info(

@@ -20,6 +20,9 @@ dev = [
 vault-backup = "vault_backup.__main__:main"
 vault-backup-restore = "vault_backup.restore_cli:main"
 
+[tool.setuptools.package-data]
+vault_backup = ["htmx.min.js"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
