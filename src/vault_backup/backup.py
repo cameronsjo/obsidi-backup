@@ -29,6 +29,9 @@ class BackupResult:
     commit_created: bool = False
     backup_created: bool = False
     changes_summary: str = ""
+    commit_message: str = ""
+    file_count: int = 0
+    changed_files: list[str] | None = None
     error: str | None = None
 
 
@@ -170,8 +173,13 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
         return message
 
 
-def git_commit(config: Config, vault_path: Path) -> tuple[bool, str]:
-    """Stage and commit all changes. Returns (success, summary)."""
+def git_commit(
+    config: Config, vault_path: Path
+) -> tuple[bool, str, str, list[str]]:
+    """Stage and commit all changes.
+
+    Returns (success, summary, commit_message, changed_files).
+    """
     # Stage all changes
     log.info("Staging changes")
     run_cmd(["git", "add", "-A"], cwd=vault_path)
@@ -179,7 +187,7 @@ def git_commit(config: Config, vault_path: Path) -> tuple[bool, str]:
     changed_files = get_changed_files(vault_path)
     if not changed_files:
         log.info("No changes to commit after staging")
-        return False, ""
+        return False, "", "", []
 
     stats = get_changes_summary(vault_path)
     log.info("Changes staged", extra={"file_count": len(changed_files), "stats": stats})
@@ -195,16 +203,16 @@ def git_commit(config: Config, vault_path: Path) -> tuple[bool, str]:
     if config.dry_run:
         log.info("[DRY RUN] Would commit", extra={"commit_message": commit_msg})
         run_cmd(["git", "reset", "HEAD"], cwd=vault_path, check=False)
-        return True, stats
+        return True, stats, commit_msg, changed_files
 
     # Commit
     result = run_cmd(["git", "commit", "-m", commit_msg], cwd=vault_path, check=False)
     if result.returncode != 0:
         log.error("Git commit failed", extra={"stderr": result.stderr.strip()})
-        return False, stats
+        return False, stats, "", changed_files
 
     log.info("Commit created", extra={"commit_message": commit_msg.split("\n")[0]})
-    return True, stats
+    return True, stats, commit_msg, changed_files
 
 
 def restic_backup(config: Config, vault_path: Path) -> bool:
@@ -318,12 +326,16 @@ def run_backup(config: Config, state_dir: Path) -> BackupResult:
         return BackupResult(success=True)
 
     # Git commit
-    commit_success, changes_summary = git_commit(config, vault_path)
+    commit_success, changes_summary, commit_msg, changed_files = git_commit(
+        config, vault_path
+    )
     if not commit_success and changes_summary:
         return BackupResult(
             success=False,
             commit_created=False,
             changes_summary=changes_summary,
+            file_count=len(changed_files),
+            changed_files=changed_files,
             error="Git commit failed",
         )
 
@@ -338,6 +350,9 @@ def run_backup(config: Config, state_dir: Path) -> BackupResult:
             commit_created=commit_success,
             backup_created=False,
             changes_summary=changes_summary,
+            commit_message=commit_msg,
+            file_count=len(changed_files),
+            changed_files=changed_files,
             error="Restic backup failed",
         )
 
@@ -359,4 +374,7 @@ def run_backup(config: Config, state_dir: Path) -> BackupResult:
         commit_created=commit_success,
         backup_created=True,
         changes_summary=changes_summary,
+        commit_message=commit_msg,
+        file_count=len(changed_files),
+        changed_files=changed_files,
     )

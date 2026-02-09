@@ -12,7 +12,7 @@ from pathlib import Path
 from pythonjsonlogger.json import JsonFormatter
 
 from vault_backup import __version__
-from vault_backup.backup import run_backup
+from vault_backup.backup import BackupResult, run_backup
 from vault_backup.config import Config
 from vault_backup.health import HealthServer
 from vault_backup.notify import Notifier
@@ -219,6 +219,59 @@ def _init_sentry(config: Config) -> None:
     log.info("Sentry initialized", extra={"environment": config.sentry_environment})
 
 
+def _format_file_list(files: list[str], limit: int = 5) -> str:
+    """Format a file list for notification display, truncating if needed."""
+    if not files:
+        return ""
+    shown = files[:limit]
+    lines = [f"  `{f}`" for f in shown]
+    remaining = len(files) - limit
+    if remaining > 0:
+        lines.append(f"  *...and {remaining} more*")
+    return "\n".join(lines)
+
+
+def _format_success(result: BackupResult) -> str:
+    """Build a rich success notification message."""
+    parts: list[str] = []
+
+    # Commit message (first line only, strip "vault: " prefix for brevity)
+    msg = result.commit_message.split("\n")[0]
+    if msg.startswith("vault: "):
+        msg = msg[7:]
+    if msg:
+        parts.append(f"**{msg}**")
+
+    # Stats line
+    if result.changes_summary:
+        parts.append(f"`{result.changes_summary}`")
+
+    # File list
+    if result.changed_files:
+        parts.append(_format_file_list(result.changed_files))
+
+    return "\n".join(parts) if parts else "Backup completed successfully."
+
+
+def _format_failure(result: BackupResult) -> str:
+    """Build a rich failure notification message."""
+    parts: list[str] = []
+
+    if result.error:
+        parts.append(f"**{result.error}**")
+
+    if result.commit_created and not result.backup_created:
+        parts.append("Git commit succeeded but restic backup failed.")
+    elif not result.commit_created and result.changes_summary:
+        parts.append(f"Failed to commit {result.file_count} changed file(s).")
+
+    if result.changed_files:
+        parts.append(_format_file_list(result.changed_files))
+
+    parts.append("Check container logs for details.")
+    return "\n".join(parts)
+
+
 def _run() -> None:
     """Run the backup sidecar."""
     log.info("Starting Obsidian Vault Backup sidecar")
@@ -276,15 +329,19 @@ def _run() -> None:
             if result.success and result.backup_created:
                 notifier.success(
                     "Vault Backup Complete",
-                    f"Committed and backed up: {result.changes_summary}",
+                    _format_success(result),
                 )
             elif not result.success:
-                notifier.error("Vault Backup Failed", result.error or "Unknown error")
+                notifier.error(
+                    "Vault Backup Failed",
+                    _format_failure(result),
+                )
         except Exception:
             log.exception("Unexpected error during backup")
             notifier.error(
                 "Vault Backup Error",
-                "Unexpected error during backup — check container logs",
+                "An unexpected error occurred during backup.\n"
+                "Check container logs for the full traceback.",
             )
 
     # Start health server with restore UI
@@ -313,9 +370,20 @@ def _run() -> None:
     signal.signal(signal.SIGINT, shutdown_handler)
 
     log.info("Vault backup sidecar ready")
+
+    debounce_min = config.debounce_seconds // 60
+    debounce_label = f"{debounce_min}m" if debounce_min else f"{config.debounce_seconds}s"
+    features = []
+    if config.llm.enabled:
+        features.append("AI commits")
+    if config.sentry_dsn:
+        features.append("Sentry")
+    features_line = f" | {', '.join(features)}" if features else ""
+
     notifier.success(
         "Vault Backup Online",
-        f"Watching `{config.vault_path}` (debounce: {config.debounce_seconds}s)",
+        f"`v{__version__}`{features_line}\n"
+        f"Watching `{config.vault_path}` (debounce: {debounce_label})",
     )
 
     # Wait for watcher (blocks until shutdown)

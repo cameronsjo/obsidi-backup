@@ -191,9 +191,13 @@ class TestGitCommit:
     def test_no_changes_after_staging(self, mock_subprocess: MagicMock, default_config: Config) -> None:
         # git add succeeds, git diff --cached returns empty
         mock_subprocess.return_value.stdout = ""
-        success, summary = git_commit(default_config, Path(default_config.vault_path))
+        success, summary, commit_msg, changed_files = git_commit(
+            default_config, Path(default_config.vault_path)
+        )
         assert success is False
         assert summary == ""
+        assert commit_msg == ""
+        assert changed_files == []
 
     def test_creates_commit(self, mock_subprocess: MagicMock, default_config: Config) -> None:
         # Different responses for different commands
@@ -213,9 +217,13 @@ class TestGitCommit:
             return result
 
         mock_subprocess.side_effect = side_effect
-        success, summary = git_commit(default_config, Path(default_config.vault_path))
+        success, summary, commit_msg, changed_files = git_commit(
+            default_config, Path(default_config.vault_path)
+        )
         assert success is True
         assert "1 file changed" in summary
+        assert "vault:" in commit_msg
+        assert changed_files == ["notes/daily.md"]
 
     def test_dry_run_resets_staging(self, mock_subprocess: MagicMock) -> None:
         config = Config(vault_path="/vault", state_dir="/state", dry_run=True)
@@ -233,8 +241,9 @@ class TestGitCommit:
             return result
 
         mock_subprocess.side_effect = side_effect
-        success, _ = git_commit(config, Path("/vault"))
+        success, _, commit_msg, changed_files = git_commit(config, Path("/vault"))
         assert success is True
+        assert changed_files == ["file.md"]
         # Verify git reset was called
         reset_calls = [c for c in mock_subprocess.call_args_list if "reset" in str(c)]
         assert len(reset_calls) >= 1
