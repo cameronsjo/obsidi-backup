@@ -120,7 +120,7 @@ def _call_anthropic(config: Config, prompt: str) -> str | None:
             log.warning("Anthropic response had empty content list")
             return None
         message = content[0].get("text")
-        log.info("AI commit message generated", extra={"provider": "anthropic", "message": message})
+        log.info("AI commit message generated", extra={"provider": "anthropic", "commit_message": message})
         return message
 
 
@@ -165,7 +165,7 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
         message = choices[0].get("message", {}).get("content")
         log.info(
             "AI commit message generated",
-            extra={"provider": "openai-compatible", "message": message},
+            extra={"provider": "openai-compatible", "commit_message": message},
         )
         return message
 
@@ -193,7 +193,7 @@ def git_commit(config: Config, vault_path: Path) -> tuple[bool, str]:
         commit_msg = f"vault: auto-backup {timestamp}\n\n{stats}"
 
     if config.dry_run:
-        log.info("[DRY RUN] Would commit", extra={"message": commit_msg})
+        log.info("[DRY RUN] Would commit", extra={"commit_message": commit_msg})
         run_cmd(["git", "reset", "HEAD"], cwd=vault_path, check=False)
         return True, stats
 
@@ -203,7 +203,7 @@ def git_commit(config: Config, vault_path: Path) -> tuple[bool, str]:
         log.error("Git commit failed", extra={"stderr": result.stderr.strip()})
         return False, stats
 
-    log.info("Commit created", extra={"message": commit_msg.split("\n")[0]})
+    log.info("Commit created", extra={"commit_message": commit_msg.split("\n")[0]})
     return True, stats
 
 
