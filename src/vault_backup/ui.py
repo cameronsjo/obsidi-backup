@@ -12,13 +12,17 @@ from vault_backup import health as _health_mod
 from vault_backup.health import HealthHandler
 from vault_backup.restore import (
     GitCommit,
+    GitFileChange,
     ResticEntry,
     ResticSnapshot,
     detect_source,
+    git_diff_tree,
     git_file_history,
     git_log,
+    git_log_single,
     git_restore_file,
     git_show_file,
+    group_entries_by_directory,
     restic_ls,
     restic_restore_file,
     restic_show_file,
@@ -274,6 +278,13 @@ def _param(params: dict[str, list[str]], key: str) -> str:
     return values[0] if values else ""
 
 
+# --- State ---
+
+_restic_ls_cache: dict[str, list[ResticEntry]] = {}
+
+_STATUS_LABELS = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
+
+
 # --- HTML Builders ---
 
 
@@ -330,41 +341,88 @@ def _render_snapshots(snapshots: list[ResticSnapshot]) -> str:
     )
 
 
-def _render_files(entries: list[ResticEntry], snapshot_id: str) -> str:
-    """Render file listing fragment for a restic snapshot."""
+def _render_files(
+    entries: list[ResticEntry],
+    snapshot_id: str,
+    prefix: str = "/",
+    *,
+    show_hidden: bool = False,
+) -> str:
+    """Render file listing fragment for a restic snapshot directory."""
     sid = html.escape(snapshot_id)
-    breadcrumb = (
-        '<div class="breadcrumb">'
-        '<a hx-get="/ui/snapshots" hx-target="#content">Snapshots</a>'
-        f" / {sid}</div>"
+    esc_prefix = html.escape(prefix)
+
+    # Build breadcrumb with clickable path segments
+    crumbs = ['<a hx-get="/ui/snapshots" hx-target="#content">Snapshots</a>']
+    crumbs.append(
+        f'<a hx-get="/ui/files?snapshot={sid}" hx-target="#content">{sid}</a>'
     )
+    if prefix != "/":
+        segments = prefix.strip("/").split("/")
+        for i, seg in enumerate(segments):
+            seg_path = "/" + "/".join(segments[: i + 1])
+            if i < len(segments) - 1:
+                crumbs.append(
+                    f'<a hx-get="/ui/files?snapshot={sid}'
+                    f"&path={html.escape(seg_path)}"
+                    f'" hx-target="#content">{html.escape(seg)}</a>'
+                )
+            else:
+                crumbs.append(html.escape(seg))
+
+    breadcrumb = '<div class="breadcrumb">' + " / ".join(crumbs) + "</div>"
+
+    # Dotfile toggle (hide .obsidian, .trash, etc.)
+    checked = " checked" if show_hidden else ""
+    hidden_param = "&show_hidden=1" if not show_hidden else ""
+    toggle = (
+        '<label style="display:inline-flex;align-items:center;gap:0.4rem;'
+        "font-size:0.78rem;color:var(--muted-text);margin-bottom:0.75rem;"
+        'font-family:var(--font-sans)">'
+        f'<input type="checkbox"{checked} hx-get="/ui/files?snapshot={sid}'
+        f"&path={esc_prefix}{hidden_param}"
+        f'" hx-target="#content"> Show dotfiles</label>'
+    )
+
     if not entries:
-        return breadcrumb + '<div class="empty">No files found.</div>'
+        return breadcrumb + toggle + '<div class="empty">No files found.</div>'
 
     rows = ""
     for e in entries:
-        path = html.escape(e.path)
-        type_str = html.escape(e.type)
+        name = Path(e.path).name
+        if not show_hidden and name.startswith("."):
+            continue
+        esc_name = html.escape(name)
         size = _format_size(e.size) if e.type == "file" else "-"
         mtime = html.escape(_format_time(e.mtime))
-        type_label = f'<code>{type_str}</code>'
-        if e.type == "file":
+
+        if e.type == "dir":
             rows += (
                 f'<tr class="clickable" '
-                f'hx-get="/ui/preview?source={sid}&path={html.escape(e.path)}" '
-                f'hx-target="#preview">'
-                f"<td><code>{path}</code></td><td>{type_label}</td>"
-                f"<td>{size}</td><td>{mtime}</td></tr>"
+                f'hx-get="/ui/files?snapshot={sid}'
+                f"&path={html.escape(e.path)}"
+                f'" hx-target="#content">'
+                f"<td><code>{esc_name}/</code></td>"
+                f"<td>-</td><td>{mtime}</td></tr>"
             )
         else:
             rows += (
-                f"<tr><td><code>{path}/</code></td><td>{type_label}</td>"
+                f'<tr class="clickable" '
+                f'hx-get="/ui/preview?source={sid}'
+                f"&path={html.escape(e.path)}"
+                f'" hx-target="#preview">'
+                f"<td><code>{esc_name}</code></td>"
                 f"<td>{size}</td><td>{mtime}</td></tr>"
             )
+
+    if not rows:
+        return breadcrumb + toggle + '<div class="empty">No visible files.</div>'
+
     return (
         breadcrumb
+        + toggle
         + "<table><thead><tr>"
-        "<th>Path</th><th>Type</th><th>Size</th><th>Modified</th>"
+        "<th>Name</th><th>Size</th><th>Modified</th>"
         "</tr></thead><tbody>" + rows + "</tbody></table>"
     )
 
@@ -394,11 +452,60 @@ def _render_log(commits: list[GitCommit], file_path: str = "") -> str:
                 f"<td><code>{short}</code></td><td>{date}</td><td>{msg}</td></tr>"
             )
         else:
-            rows += f"<tr><td><code>{short}</code></td><td>{date}</td><td>{msg}</td></tr>"
+            rows += (
+                f'<tr class="clickable" '
+                f'hx-get="/ui/commit?hash={short}" hx-target="#content">'
+                f"<td><code>{short}</code></td><td>{date}</td><td>{msg}</td></tr>"
+            )
     return (
         filter_input
         + "<table><thead><tr>"
         "<th>Commit</th><th>Date</th><th>Message</th>"
+        "</tr></thead><tbody>" + rows + "</tbody></table>"
+    )
+
+
+def _render_commit_files(commit: GitCommit, changes: list[GitFileChange]) -> str:
+    """Render the list of files changed in a git commit."""
+    short = html.escape(commit.short_hash)
+    date = html.escape(_format_time(commit.date))
+    msg = html.escape(commit.message)
+
+    breadcrumb = (
+        '<div class="breadcrumb">'
+        '<a hx-get="/ui/log" hx-target="#content">Git History</a>'
+        f" / {short}</div>"
+    )
+    header = (
+        f'<div style="margin-bottom:0.75rem">'
+        f"<code>{short}</code> &mdash; {date}<br>{msg}</div>"
+    )
+
+    if not changes:
+        return breadcrumb + header + '<div class="empty">No files changed.</div>'
+
+    rows = ""
+    for ch in changes:
+        path = html.escape(ch.path)
+        status = html.escape(_STATUS_LABELS.get(ch.status, ch.status))
+        if ch.status == "D":
+            rows += (
+                f"<tr><td><code>{status}</code></td>"
+                f"<td><code>{path}</code></td></tr>"
+            )
+        else:
+            rows += (
+                f'<tr class="clickable" '
+                f'hx-get="/ui/preview?source={short}&path={path}" '
+                f'hx-target="#preview">'
+                f"<td><code>{status}</code></td>"
+                f"<td><code>{path}</code></td></tr>"
+            )
+
+    return (
+        breadcrumb + header
+        + "<table><thead><tr>"
+        "<th>Status</th><th>File</th>"
         "</tr></thead><tbody>" + rows + "</tbody></table>"
     )
 
@@ -477,6 +584,8 @@ class RestoreHandler(HealthHandler):
                 self._handle_files(params)
             elif path == "/ui/log":
                 self._handle_log(params)
+            elif path == "/ui/commit":
+                self._handle_commit(params)
             elif path == "/ui/preview":
                 self._handle_preview(params)
             elif path == "/ui/download":
@@ -493,15 +602,22 @@ class RestoreHandler(HealthHandler):
 
     def _handle_files(self, params: dict[str, list[str]]) -> None:
         snapshot_id = _param(params, "snapshot")
+        prefix = _param(params, "path") or "/"
+        show_hidden = bool(_param(params, "show_hidden"))
         if not snapshot_id:
             self._send_html(_render_error("Missing snapshot parameter"), code=400)
             return
-        try:
-            entries = restic_ls(snapshot_id)
-        except ValueError as e:
-            self._send_html(_render_error(str(e)), code=404)
-            return
-        self._send_html(_render_files(entries, snapshot_id))
+
+        if snapshot_id not in _restic_ls_cache:
+            try:
+                _restic_ls_cache[snapshot_id] = restic_ls(snapshot_id)
+            except ValueError as e:
+                self._send_html(_render_error(str(e)), code=404)
+                return
+
+        all_entries = _restic_ls_cache[snapshot_id]
+        visible = group_entries_by_directory(all_entries, prefix)
+        self._send_html(_render_files(visible, snapshot_id, prefix, show_hidden=show_hidden))
 
     def _handle_log(self, params: dict[str, list[str]]) -> None:
         vault_path = self._get_vault_path()
@@ -511,6 +627,22 @@ class RestoreHandler(HealthHandler):
         file_path = _param(params, "file")
         commits = git_file_history(vault_path, file_path) if file_path else git_log(vault_path)
         self._send_html(_render_log(commits, file_path))
+
+    def _handle_commit(self, params: dict[str, list[str]]) -> None:
+        vault_path = self._get_vault_path()
+        if vault_path is None:
+            self._send_html(_render_error("Health state not initialized"), code=500)
+            return
+        commit_hash = _param(params, "hash")
+        if not commit_hash:
+            self._send_html(_render_error("Missing hash parameter"), code=400)
+            return
+        commits = git_log_single(vault_path, commit_hash)
+        if not commits:
+            self._send_html(_render_error(f"Commit {commit_hash} not found"), code=404)
+            return
+        changes = git_diff_tree(vault_path, commit_hash)
+        self._send_html(_render_commit_files(commits[0], changes))
 
     def _handle_preview(self, params: dict[str, list[str]]) -> None:
         source = _param(params, "source")

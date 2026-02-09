@@ -112,6 +112,24 @@ def _mock_restic_ls(_snapshot_id: str, _path: str = "/") -> list:
     return [ResticEntry(**f) for f in SAMPLE_FILES]
 
 
+def _mock_git_log_single(_vault_path: Path, _commit: str) -> list:
+    from vault_backup.restore import GitCommit
+    # Find matching commit or return first one
+    for c in SAMPLE_COMMITS:
+        if c["short_hash"] == _commit:
+            return [GitCommit(**c)]
+    return [GitCommit(**SAMPLE_COMMITS[0])]
+
+
+def _mock_git_diff_tree(_vault_path: Path, _commit: str) -> list:
+    from vault_backup.restore import GitFileChange
+    return [
+        GitFileChange(path="Daily Notes/2026-02-09.md", status="M"),
+        GitFileChange(path="Projects/Homelab.md", status="M"),
+        GitFileChange(path="Reading List.md", status="A"),
+    ]
+
+
 def _mock_restic_show_file(_snapshot_id: str, _filepath: str) -> str:
     return SAMPLE_FILE_CONTENT
 
@@ -143,6 +161,8 @@ def main() -> None:
         "vault_backup.ui.git_show_file": _mock_git_show_file,
         "vault_backup.ui.git_restore_file": _mock_git_restore_file,
         "vault_backup.ui.restic_snapshots": _mock_restic_snapshots,
+        "vault_backup.ui.git_log_single": _mock_git_log_single,
+        "vault_backup.ui.git_diff_tree": _mock_git_diff_tree,
         "vault_backup.ui.restic_ls": _mock_restic_ls,
         "vault_backup.ui.restic_show_file": _mock_restic_show_file,
         "vault_backup.ui.restic_restore_file": _mock_restic_restore_file,

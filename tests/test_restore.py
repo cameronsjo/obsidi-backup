@@ -10,13 +10,17 @@ import pytest
 
 from vault_backup.restore import (
     GitCommit,
+    GitFileChange,
     ResticEntry,
     ResticSnapshot,
     detect_source,
+    git_diff_tree,
     git_file_history,
     git_log,
+    git_log_single,
     git_restore_file,
     git_show_file,
+    group_entries_by_directory,
     restic_ls,
     restic_restore_file,
     restic_show_file,
@@ -55,6 +59,11 @@ class TestDataClasses:
         with pytest.raises(AttributeError):
             s.id = "xyz"  # type: ignore[misc]
 
+    def test_git_file_change_fields(self) -> None:
+        c = GitFileChange(path="notes/daily.md", status="M")
+        assert c.path == "notes/daily.md"
+        assert c.status == "M"
+
 
 # --- Git operations ---
 
@@ -88,6 +97,27 @@ class TestGitLog:
         mock_subprocess.return_value.stdout = ""
         mock_subprocess.return_value.returncode = 0
         assert git_log(Path("/vault")) == []
+
+
+class TestGitLogSingle:
+    def test_returns_single_commit(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = (
+            "abc123def456789012345678901234567890abcd\n"
+            "abc123d\n"
+            "2025-01-15T10:30:00+00:00\n"
+            "update daily notes\n"
+        )
+        mock_subprocess.return_value.returncode = 0
+        commits = git_log_single(Path("/vault"), "abc123d")
+        assert len(commits) == 1
+        assert commits[0].short_hash == "abc123d"
+        cmd = mock_subprocess.call_args[0][0]
+        assert "-1" in cmd
+
+    def test_not_found(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = ""
+        mock_subprocess.return_value.returncode = 128
+        assert git_log_single(Path("/vault"), "badbeef") == []
 
 
 class TestGitFileHistory:
@@ -142,6 +172,35 @@ class TestGitRestoreFile:
         target = tmp_path / "deep" / "nested" / "dir" / "file.md"
         git_restore_file(Path("/vault"), "abc", "file.md", target)
         assert target.exists()
+
+
+class TestGitDiffTree:
+    def test_parses_name_status(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = "M\tnotes/daily.md\nA\tnotes/new.md\nD\told/removed.md\n"
+        mock_subprocess.return_value.returncode = 0
+        changes = git_diff_tree(Path("/vault"), "abc123d")
+        assert len(changes) == 3
+        assert changes[0] == GitFileChange(path="notes/daily.md", status="M")
+        assert changes[1] == GitFileChange(path="notes/new.md", status="A")
+        assert changes[2] == GitFileChange(path="old/removed.md", status="D")
+
+    def test_handles_rename(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = "R100\told-name.md\n"
+        mock_subprocess.return_value.returncode = 0
+        changes = git_diff_tree(Path("/vault"), "abc123d")
+        assert len(changes) == 1
+        assert changes[0].status == "R"
+        assert changes[0].path == "old-name.md"
+
+    def test_empty_commit(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = ""
+        mock_subprocess.return_value.returncode = 0
+        assert git_diff_tree(Path("/vault"), "abc123d") == []
+
+    def test_failed_command(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.returncode = 128
+        mock_subprocess.return_value.stdout = ""
+        assert git_diff_tree(Path("/vault"), "badbeef") == []
 
 
 # --- Restic operations ---
@@ -281,6 +340,77 @@ class TestResticRestoreFile:
         mock_subprocess.return_value.stderr = "dump failed"
         with pytest.raises(FileNotFoundError, match="Failed to restore"):
             restic_restore_file("abcdef12", "/vault/gone.md", tmp_path / "out.md")
+
+
+# --- Directory grouping ---
+
+
+class TestGroupEntriesByDirectory:
+    def test_root_level(self) -> None:
+        entries = [
+            ResticEntry(path="/vault", type="dir", size=0, mtime=""),
+            ResticEntry(path="/vault/note.md", type="file", size=100, mtime="2025-01-15T00:00:00Z"),
+            ResticEntry(path="/vault/deep/nested.md", type="file", size=50, mtime=""),
+        ]
+        result = group_entries_by_directory(entries, "/")
+        assert len(result) == 1  # only /vault dir
+        assert result[0].path == "/vault"
+        assert result[0].type == "dir"
+
+    def test_subdirectory(self) -> None:
+        entries = [
+            ResticEntry(path="/vault/notes", type="dir", size=0, mtime=""),
+            ResticEntry(path="/vault/notes/daily.md", type="file", size=100, mtime="t1"),
+            ResticEntry(path="/vault/notes/weekly.md", type="file", size=200, mtime="t2"),
+            ResticEntry(path="/vault/notes/archive/old.md", type="file", size=50, mtime=""),
+            ResticEntry(path="/vault/readme.md", type="file", size=80, mtime="t3"),
+        ]
+        result = group_entries_by_directory(entries, "/vault")
+        names = [e.path for e in result]
+        assert "/vault/notes" in names
+        assert "/vault/readme.md" in names
+        assert len(result) == 2  # notes dir + readme.md file
+
+    def test_synthesizes_implicit_dirs(self) -> None:
+        """Directories without explicit dir entries are synthesized."""
+        entries = [
+            ResticEntry(path="/vault/notes/daily.md", type="file", size=100, mtime=""),
+            ResticEntry(path="/vault/projects/homelab.md", type="file", size=200, mtime=""),
+        ]
+        result = group_entries_by_directory(entries, "/vault")
+        assert len(result) == 2
+        assert all(e.type == "dir" for e in result)
+        paths = {e.path for e in result}
+        assert "/vault/notes" in paths
+        assert "/vault/projects" in paths
+
+    def test_empty_entries(self) -> None:
+        assert group_entries_by_directory([], "/") == []
+
+    def test_dirs_sorted_before_files(self) -> None:
+        entries = [
+            ResticEntry(path="/vault/zebra.md", type="file", size=100, mtime=""),
+            ResticEntry(path="/vault/alpha", type="dir", size=0, mtime=""),
+            ResticEntry(path="/vault/alpha/file.md", type="file", size=50, mtime=""),
+            ResticEntry(path="/vault/beta.md", type="file", size=80, mtime=""),
+        ]
+        result = group_entries_by_directory(entries, "/vault")
+        assert result[0].type == "dir"  # alpha dir first
+        assert result[0].path == "/vault/alpha"
+        assert result[1].path == "/vault/beta.md"
+        assert result[2].path == "/vault/zebra.md"
+
+    def test_no_duplicate_dirs(self) -> None:
+        """Multiple files in same dir should produce one dir entry."""
+        entries = [
+            ResticEntry(path="/vault/notes/a.md", type="file", size=10, mtime=""),
+            ResticEntry(path="/vault/notes/b.md", type="file", size=20, mtime=""),
+            ResticEntry(path="/vault/notes/c.md", type="file", size=30, mtime=""),
+        ]
+        result = group_entries_by_directory(entries, "/vault")
+        assert len(result) == 1
+        assert result[0].path == "/vault/notes"
+        assert result[0].type == "dir"
 
 
 # --- Source detection ---

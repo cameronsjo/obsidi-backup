@@ -46,6 +46,14 @@ class ResticEntry:
     mtime: str
 
 
+@dataclass(frozen=True)
+class GitFileChange:
+    """A file changed in a git commit."""
+
+    path: str
+    status: str  # A (added), M (modified), D (deleted), R (renamed)
+
+
 # --- Git operations ---
 
 _GIT_LOG_FORMAT = "%H%n%h%n%aI%n%s"
@@ -73,6 +81,19 @@ def git_log(vault_path: Path, count: int = 20) -> list[GitCommit]:
     log.debug("Listing git commits", extra={"vault_path": str(vault_path), "count": count})
     result = run_cmd(
         ["git", "log", f"--format={_GIT_LOG_FORMAT}", f"-{count}"],
+        cwd=vault_path,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    return _parse_git_log(result.stdout)
+
+
+def git_log_single(vault_path: Path, commit: str) -> list[GitCommit]:
+    """Get a single commit's details by hash."""
+    log.debug("Getting commit details", extra={"commit": commit})
+    result = run_cmd(
+        ["git", "log", f"--format={_GIT_LOG_FORMAT}", "-1", commit],
         cwd=vault_path,
         check=False,
     )
@@ -125,6 +146,27 @@ def git_restore_file(vault_path: Path, commit: str, filepath: str, target: Path)
     target.write_text(content)
     log.info("File restored from git", extra={"target": str(target)})
     return target
+
+
+def git_diff_tree(vault_path: Path, commit: str) -> list[GitFileChange]:
+    """List files changed in a specific git commit."""
+    log.debug("Listing files in commit", extra={"commit": commit})
+    result = run_cmd(
+        ["git", "diff-tree", "--no-commit-id", "-r", "--name-status", commit],
+        cwd=vault_path,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+
+    changes: list[GitFileChange] = []
+    for line in result.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            changes.append(GitFileChange(path=parts[1], status=parts[0][0]))
+    return changes
 
 
 # --- Restic operations ---
@@ -196,6 +238,53 @@ def restic_ls(snapshot_id: str, path: str = "/") -> list[ResticEntry]:
         entries = [e for e in entries if e.path.startswith(normalized)]
 
     return entries
+
+
+def group_entries_by_directory(
+    entries: list[ResticEntry], prefix: str = "/"
+) -> list[ResticEntry]:
+    """Return immediate children of prefix from a flat entry list.
+
+    Groups a flat list of restic entries into a single directory level.
+    Implicit directories (path components without explicit dir entries)
+    are synthesized. Results are sorted: directories first, then files.
+    """
+    normalized = prefix.rstrip("/") + "/" if prefix != "/" else "/"
+    seen_dirs: dict[str, ResticEntry] = {}
+    files: list[ResticEntry] = []
+
+    for entry in entries:
+        path = entry.path
+        if not path.startswith(normalized):
+            continue
+
+        relative = path[len(normalized):]
+        if not relative:
+            continue
+
+        if "/" in relative:
+            # Subdirectory — extract first component
+            dir_name = relative.split("/", 1)[0]
+            dir_path = normalized + dir_name
+            if dir_name not in seen_dirs:
+                # Use explicit dir entry if this IS the dir, otherwise synthesize
+                if entry.type == "dir" and entry.path == dir_path:
+                    seen_dirs[dir_name] = entry
+                else:
+                    seen_dirs[dir_name] = ResticEntry(
+                        path=dir_path, type="dir", size=0, mtime=""
+                    )
+        elif entry.type == "dir":
+            # Explicit dir entry at this level
+            dir_name = relative
+            if dir_name not in seen_dirs:
+                seen_dirs[dir_name] = entry
+        else:
+            files.append(entry)
+
+    sorted_dirs = sorted(seen_dirs.values(), key=lambda e: e.path.lower())
+    sorted_files = sorted(files, key=lambda e: e.path.lower())
+    return sorted_dirs + sorted_files
 
 
 def restic_show_file(snapshot_id: str, filepath: str) -> str:

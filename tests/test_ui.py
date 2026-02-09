@@ -14,16 +14,18 @@ import pytest
 
 from vault_backup.config import Config
 from vault_backup.health import HealthState
-from vault_backup.restore import GitCommit, ResticEntry, ResticSnapshot
+from vault_backup.restore import GitCommit, GitFileChange, ResticEntry, ResticSnapshot
 from vault_backup.ui import (
     RestoreHandler,
     _format_size,
     _format_time,
+    _render_commit_files,
     _render_error,
     _render_files,
     _render_log,
     _render_preview,
     _render_restore_result,
+    _restic_ls_cache,
     _render_snapshots,
 )
 
@@ -41,6 +43,7 @@ def ui_server(default_config: Config):
     yield f"http://127.0.0.1:{port}"
     server.shutdown()
     health_mod._health_state = None
+    _restic_ls_cache.clear()
 
 
 def _get(url: str) -> tuple[int, str, dict[str, str]]:
@@ -149,7 +152,8 @@ class TestRenderLog:
         result = _render_log(commits)
         assert "abc123d" in result
         assert "update" in result
-        assert "clickable" not in result  # not clickable without file filter
+        assert "clickable" in result  # all commits are clickable
+        assert "/ui/commit?hash=abc123d" in result
 
     def test_with_file_filter(self) -> None:
         commits = [
@@ -257,14 +261,26 @@ class TestSnapshotsEndpoint:
 
 
 class TestFilesEndpoint:
-    def test_returns_files(self, ui_server: str) -> None:
+    def test_returns_directory_listing(self, ui_server: str) -> None:
         entries = [
+            ResticEntry(path="/vault", type="dir", size=0, mtime=""),
             ResticEntry(path="/vault/note.md", type="file", size=1024, mtime="2025-01-15T00:00:00Z"),
         ]
         with patch("vault_backup.ui.restic_ls", return_value=entries):
             status, body, _ = _get(f"{ui_server}/ui/files?snapshot=abcdef12")
         assert status == 200
-        assert "/vault/note.md" in body
+        assert "vault/" in body  # shows dir at root level
+        assert "clickable" in body
+
+    def test_drills_into_directory(self, ui_server: str) -> None:
+        entries = [
+            ResticEntry(path="/vault", type="dir", size=0, mtime=""),
+            ResticEntry(path="/vault/note.md", type="file", size=1024, mtime="2025-01-15T00:00:00Z"),
+        ]
+        with patch("vault_backup.ui.restic_ls", return_value=entries):
+            status, body, _ = _get(f"{ui_server}/ui/files?snapshot=abcdef12&path=/vault")
+        assert status == 200
+        assert "note.md" in body
 
     def test_missing_param(self, ui_server: str) -> None:
         status, body, _ = _get(f"{ui_server}/ui/files")
@@ -281,6 +297,15 @@ class TestFilesEndpoint:
         with patch("vault_backup.ui.restic_ls", return_value=[]):
             _, body, _ = _get(f"{ui_server}/ui/files?snapshot=abcdef12")
         assert "No files found" in body
+
+    def test_caches_restic_ls(self, ui_server: str) -> None:
+        entries = [
+            ResticEntry(path="/vault/note.md", type="file", size=100, mtime=""),
+        ]
+        with patch("vault_backup.ui.restic_ls", return_value=entries) as mock_ls:
+            _get(f"{ui_server}/ui/files?snapshot=cached01")
+            _get(f"{ui_server}/ui/files?snapshot=cached01&path=/vault")
+            assert mock_ls.call_count == 1  # only called once due to cache
 
 
 # --- Log endpoint ---
@@ -399,3 +424,115 @@ class TestRestoreEndpoint:
             )
         assert status == 404
         assert "nope" in body
+
+
+# --- Render commit files ---
+
+
+class TestRenderCommitFiles:
+    def test_shows_changed_files(self) -> None:
+        commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="update notes")
+        changes = [
+            GitFileChange(path="notes/daily.md", status="M"),
+            GitFileChange(path="notes/new.md", status="A"),
+        ]
+        result = _render_commit_files(commit, changes)
+        assert "abc123d" in result
+        assert "notes/daily.md" in result
+        assert "notes/new.md" in result
+        assert "modified" in result
+        assert "added" in result
+
+    def test_deleted_files_not_clickable(self) -> None:
+        commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="cleanup")
+        changes = [GitFileChange(path="old/removed.md", status="D")]
+        result = _render_commit_files(commit, changes)
+        assert "deleted" in result
+        assert "old/removed.md" in result
+        assert "clickable" not in result
+
+    def test_breadcrumb_links_to_log(self) -> None:
+        commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="test")
+        result = _render_commit_files(commit, [])
+        assert "/ui/log" in result
+        assert "Git History" in result
+
+    def test_empty_changes(self) -> None:
+        commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="empty")
+        result = _render_commit_files(commit, [])
+        assert "No files changed" in result
+
+
+# --- Render files (directory browsing) ---
+
+
+class TestRenderFilesDirectoryBrowsing:
+    def test_shows_basename_not_full_path(self) -> None:
+        entries = [
+            ResticEntry(path="/vault/notes/daily.md", type="file", size=100, mtime=""),
+        ]
+        result = _render_files(entries, "abcdef12", "/vault/notes")
+        assert "daily.md" in result
+        assert "/vault/notes/daily.md" not in result.split("breadcrumb")[1].split("table")[0]
+
+    def test_dirs_are_clickable(self) -> None:
+        entries = [
+            ResticEntry(path="/vault/notes", type="dir", size=0, mtime=""),
+        ]
+        result = _render_files(entries, "abcdef12", "/vault")
+        assert "clickable" in result
+        assert "/ui/files?snapshot=abcdef12&path=/vault/notes" in result
+
+    def test_breadcrumb_has_segments(self) -> None:
+        result = _render_files([], "abcdef12", "/vault/notes/archive")
+        assert "Snapshots" in result
+        assert "abcdef12" in result
+        assert "vault" in result
+        assert "notes" in result
+        assert "archive" in result
+
+    def test_hides_dotfiles_by_default(self) -> None:
+        entries = [
+            ResticEntry(path="/vault/.obsidian", type="dir", size=0, mtime=""),
+            ResticEntry(path="/vault/notes", type="dir", size=0, mtime=""),
+        ]
+        result = _render_files(entries, "abcdef12", "/vault")
+        assert "notes" in result
+        assert ".obsidian" not in result
+
+    def test_shows_dotfiles_when_toggled(self) -> None:
+        entries = [
+            ResticEntry(path="/vault/.obsidian", type="dir", size=0, mtime=""),
+            ResticEntry(path="/vault/notes", type="dir", size=0, mtime=""),
+        ]
+        result = _render_files(entries, "abcdef12", "/vault", show_hidden=True)
+        assert ".obsidian" in result
+        assert "notes" in result
+
+
+# --- Commit endpoint ---
+
+
+class TestCommitEndpoint:
+    def test_returns_changed_files(self, ui_server: str) -> None:
+        commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="update")
+        changes = [GitFileChange(path="notes/daily.md", status="M")]
+        with (
+            patch("vault_backup.ui.git_log_single", return_value=[commit]),
+            patch("vault_backup.ui.git_diff_tree", return_value=changes),
+        ):
+            status, body, _ = _get(f"{ui_server}/ui/commit?hash=abc123d")
+        assert status == 200
+        assert "notes/daily.md" in body
+        assert "modified" in body
+
+    def test_missing_hash(self, ui_server: str) -> None:
+        status, body, _ = _get(f"{ui_server}/ui/commit")
+        assert status == 400
+        assert "Missing" in body
+
+    def test_commit_not_found(self, ui_server: str) -> None:
+        with patch("vault_backup.ui.git_log_single", return_value=[]):
+            status, body, _ = _get(f"{ui_server}/ui/commit?hash=badbeef")
+        assert status == 404
+        assert "not found" in body
