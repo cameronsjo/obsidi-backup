@@ -445,13 +445,14 @@ class TestRenderCommitFiles:
         assert "modified" in result
         assert "added" in result
 
-    def test_deleted_files_not_clickable(self) -> None:
+    def test_deleted_files_link_to_diff(self) -> None:
         commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="cleanup")
         changes = [GitFileChange(path="old/removed.md", status="D")]
         result = _render_commit_files(commit, changes)
         assert "deleted" in result
         assert "old/removed.md" in result
-        assert "clickable" not in result
+        assert "clickable" in result
+        assert "/ui/diff?source=abc123d&path=old/removed.md" in result
 
     def test_breadcrumb_links_to_log(self) -> None:
         commit = GitCommit(hash="a" * 40, short_hash="abc123d", date="2025-01-15T10:30:00+00:00", message="test")

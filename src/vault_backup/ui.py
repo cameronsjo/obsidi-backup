@@ -639,7 +639,10 @@ def _render_commit_files(commit: GitCommit, changes: list[GitFileChange]) -> str
         css_cls = _STATUS_CSS.get(ch.status, "")
         if ch.status == "D":
             rows += (
-                f'<tr><td><code class="{css_cls}">{status}</code></td>'
+                f'<tr class="clickable" '
+                f'hx-get="/ui/diff?source={short}&path={path}" '
+                f'hx-target="#preview">'
+                f'<td><code class="{css_cls}">{status}</code></td>'
                 f"<td><code>{path}</code></td></tr>"
             )
         else:
