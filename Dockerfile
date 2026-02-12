@@ -50,4 +50,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # (git safe.directory requires matching ownership or root)
 USER root
 
+COPY LICENSE /licenses/LICENSE
+
 ENTRYPOINT ["python", "-m", "vault_backup"]
