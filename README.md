@@ -1,8 +1,8 @@
-# Obsidian Vault Backup
+# obsidi-backup
 
-[![Build and Push](https://github.com/cameronsjo/obsidian-vault-backup/actions/workflows/build.yml/badge.svg)](https://github.com/cameronsjo/obsidian-vault-backup/actions/workflows/build.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Container Registry](https://img.shields.io/badge/ghcr.io-obsidian--vault--backup-blue)](https://ghcr.io/cameronsjo/obsidian-vault-backup)
+[![Build and Push](https://github.com/cameronsjo/obsidi-backup/actions/workflows/build.yml/badge.svg)](https://github.com/cameronsjo/obsidi-backup/actions/workflows/build.yml)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0)
+[![Container Registry](https://img.shields.io/badge/ghcr.io-obsidi--backup-blue)](https://ghcr.io/cameronsjo/obsidi-backup)
 
 A lightweight sidecar container that automatically backs up your Obsidian vault with git versioning and cloud storage via restic.
 
@@ -31,7 +31,7 @@ Obsidian Sync is great, but it's not a backup. This container provides:
 ```yaml
 services:
   vault-backup:
-    image: ghcr.io/cameronsjo/obsidian-vault-backup:latest
+    image: ghcr.io/cameronsjo/obsidi-backup:latest
     environment:
       TZ: America/Chicago
       # Storage backend (Azure example)
@@ -316,4 +316,4 @@ ruff check src/
 
 ## License
 
-MIT - see [LICENSE](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE). Commercial use requires a separate license — [get in touch](https://github.com/cameronsjo)
