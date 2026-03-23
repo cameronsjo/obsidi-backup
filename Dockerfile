@@ -18,6 +18,7 @@ FROM python:3.12-alpine
 # Install runtime dependencies
 RUN apk add --no-cache \
     git \
+    openssh-client \
     restic \
     tzdata \
     curl

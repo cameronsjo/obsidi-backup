@@ -17,6 +17,7 @@ from vault_backup.backup import (
     get_changed_files,
     get_changes_summary,
     git_commit,
+    git_push,
     has_changes,
     restic_backup,
     restic_prune,
@@ -289,6 +290,116 @@ class TestResticPrune:
         assert f"--keep-daily={default_config.retention.daily}" in cmd
         assert f"--keep-weekly={default_config.retention.weekly}" in cmd
         assert f"--keep-monthly={default_config.retention.monthly}" in cmd
+
+
+class TestGitPush:
+    def test_push_called_after_commit_when_remote_configured(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """Push is called after a successful commit when remote is configured."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if cmd[0:3] == ["git", "diff", "--cached"]:
+                if "--name-only" in cmd:
+                    result.stdout = "notes/daily.md\n"
+                else:
+                    result.stdout = " 1 file changed, 5 insertions(+)"
+            elif cmd[0:2] == ["git", "commit"]:
+                result.stdout = "[main abc1234] vault: auto-backup\n"
+            else:
+                result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        git_commit(config_with_remote, Path(config_with_remote.vault_path))
+
+        push_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c[0][0][:2] == ["git", "push"]
+        ]
+        assert len(push_calls) == 1
+        assert push_calls[0][0][0] == ["git", "push", "origin", "HEAD"]
+
+    def test_push_not_called_when_no_remote(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        """No push when git_remote_url is not set."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if cmd[0:3] == ["git", "diff", "--cached"]:
+                if "--name-only" in cmd:
+                    result.stdout = "notes/daily.md\n"
+                else:
+                    result.stdout = " 1 file changed, 5 insertions(+)"
+            elif cmd[0:2] == ["git", "commit"]:
+                result.stdout = "[main abc1234] vault: auto-backup\n"
+            else:
+                result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        git_commit(default_config, Path(default_config.vault_path))
+
+        push_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c[0][0][:2] == ["git", "push"]
+        ]
+        assert len(push_calls) == 0
+
+    def test_push_failure_nonfatal(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """Push failure does not affect git_commit return value."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            if cmd[0:3] == ["git", "diff", "--cached"]:
+                result.returncode = 0
+                if "--name-only" in cmd:
+                    result.stdout = "notes/daily.md\n"
+                else:
+                    result.stdout = " 1 file changed, 5 insertions(+)"
+            elif cmd[0:2] == ["git", "commit"]:
+                result.returncode = 0
+                result.stdout = "[main abc1234] vault: auto-backup\n"
+            elif cmd[0:2] == ["git", "push"]:
+                result.returncode = 1
+                result.stdout = ""
+                result.stderr = "remote: Permission denied"
+            else:
+                result.returncode = 0
+                result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        success, _, _, _ = git_commit(
+            config_with_remote, Path(config_with_remote.vault_path)
+        )
+        assert success is True
+
+    def test_push_skipped_in_dry_run(
+        self, mock_subprocess: MagicMock
+    ) -> None:
+        """Push is not executed in dry run mode."""
+        config = Config(
+            vault_path="/vault", state_dir="/state",
+            dry_run=True, git_remote_url="git@example.com:repo.git",
+        )
+        mock_subprocess.return_value.returncode = 0
+        mock_subprocess.return_value.stdout = ""
+        mock_subprocess.return_value.stderr = ""
+
+        git_push(config, Path("/vault"))
+
+        push_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c[0][0][:2] == ["git", "push"]
+        ]
+        assert len(push_calls) == 0
 
 
 class TestRunBackup:

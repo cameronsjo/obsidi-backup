@@ -62,6 +62,18 @@ def config_with_openai(default_config: Config) -> Config:
 
 
 @pytest.fixture()
+def config_with_remote(default_config: Config) -> Config:
+    """Config with git remote URL configured."""
+    return Config(
+        vault_path=default_config.vault_path,
+        state_dir=default_config.state_dir,
+        debounce_seconds=default_config.debounce_seconds,
+        health_port=default_config.health_port,
+        git_remote_url="git@git.sjo.lol:cameron/the-compendium.git",
+    )
+
+
+@pytest.fixture()
 def notify_config_discord() -> NotifyConfig:
     """NotifyConfig with Discord webhook."""
     return NotifyConfig(
