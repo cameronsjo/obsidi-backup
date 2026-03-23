@@ -173,6 +173,23 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
         return message
 
 
+def git_push(config: Config, vault_path: Path) -> bool:
+    """Push commits to configured remote. Failure is non-fatal."""
+    if config.dry_run:
+        log.info("[DRY RUN] Would push to remote", extra={"remote_url": config.git_remote_url})
+        return True
+
+    log.info("Pushing to remote", extra={"remote_url": config.git_remote_url})
+    result = run_cmd(["git", "push", "origin", "HEAD"], cwd=vault_path, check=False)
+
+    if result.returncode != 0:
+        log.warning("Git push failed", extra={"stderr": result.stderr.strip()})
+        return False
+
+    log.info("Push completed")
+    return True
+
+
 def git_commit(
     config: Config, vault_path: Path
 ) -> tuple[bool, str, str, list[str]]:
@@ -212,6 +229,11 @@ def git_commit(
         return False, stats, "", changed_files
 
     log.info("Commit created", extra={"commit_message": commit_msg.split("\n")[0]})
+
+    # Push to remote if configured (non-fatal)
+    if config.git_remote_url:
+        git_push(config, vault_path)
+
     return True, stats, commit_msg, changed_files
 
 

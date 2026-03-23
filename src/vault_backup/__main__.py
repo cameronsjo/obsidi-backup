@@ -171,7 +171,33 @@ def initialize_git(config: Config) -> None:
     subprocess.run(["git", "config", "core.autocrlf", "input"], cwd=vault_path, check=True)
     subprocess.run(["git", "config", "core.safecrlf", "false"], cwd=vault_path, check=True)
 
-    log.info("Git configured: %s <%s>", config.git_user_name, config.git_user_email)
+    # Configure remote if specified
+    if config.git_remote_url:
+        _result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=vault_path, capture_output=True, text=True,
+        )
+        if _result.returncode != 0:
+            subprocess.run(
+                ["git", "remote", "add", "origin", config.git_remote_url],
+                cwd=vault_path, check=True,
+            )
+            log.info("Git remote added", extra={"remote_url": config.git_remote_url})
+        elif _result.stdout.strip() != config.git_remote_url:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", config.git_remote_url],
+                cwd=vault_path, check=True,
+            )
+            log.info("Git remote updated", extra={"remote_url": config.git_remote_url})
+        else:
+            log.info("Git remote unchanged", extra={"remote_url": config.git_remote_url})
+
+    log.info(
+        "Git configured: %s <%s>",
+        config.git_user_name,
+        config.git_user_email,
+        extra={"remote_url": config.git_remote_url},
+    )
 
 
 def check_restic(config: Config) -> None:
