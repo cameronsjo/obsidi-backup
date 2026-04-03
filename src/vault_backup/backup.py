@@ -173,21 +173,78 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
         return message
 
 
+_MAX_PUSH_ATTEMPTS = 3
+
+
+def _get_current_branch(vault_path: Path) -> str | None:
+    """Get the current branch name."""
+    result = run_cmd(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=vault_path, check=False
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _pull_rebase(vault_path: Path, branch: str) -> bool:
+    """Pull and rebase local commits on top of remote.
+
+    On conflict, aborts the rebase to restore the pre-rebase state.
+    Returns True if rebase succeeded.
+    """
+    log.info("Pulling remote changes with rebase", extra={"branch": branch})
+    result = run_cmd(
+        ["git", "pull", "--rebase", "origin", branch], cwd=vault_path, check=False
+    )
+    if result.returncode == 0:
+        log.info("Pull rebase completed")
+        return True
+
+    log.warning(
+        "Pull rebase failed, aborting rebase",
+        extra={"stderr": result.stderr.strip()},
+    )
+    run_cmd(["git", "rebase", "--abort"], cwd=vault_path, check=False)
+    return False
+
+
 def git_push(config: Config, vault_path: Path) -> bool:
-    """Push commits to configured remote. Failure is non-fatal."""
+    """Push commits to configured remote with pull-rebase retry.
+
+    When the remote is ahead (e.g. other writers pushed), this will
+    pull-rebase local commits on top before retrying the push.
+    Failure is non-fatal — restic backup still captures vault state.
+    """
     if config.dry_run:
         log.info("[DRY RUN] Would push to remote", extra={"remote_url": config.git_remote_url})
         return True
 
-    log.info("Pushing to remote", extra={"remote_url": config.git_remote_url})
-    result = run_cmd(["git", "push", "origin", "HEAD"], cwd=vault_path, check=False)
+    for attempt in range(1, _MAX_PUSH_ATTEMPTS + 1):
+        log.info(
+            "Pushing to remote",
+            extra={"remote_url": config.git_remote_url, "attempt": attempt},
+        )
+        result = run_cmd(["git", "push", "origin", "HEAD"], cwd=vault_path, check=False)
 
-    if result.returncode != 0:
-        log.warning("Git push failed", extra={"stderr": result.stderr.strip()})
-        return False
+        if result.returncode == 0:
+            log.info("Push completed")
+            return True
 
-    log.info("Push completed")
-    return True
+        log.warning(
+            "Git push failed",
+            extra={"stderr": result.stderr.strip(), "attempt": attempt},
+        )
+
+        if attempt < _MAX_PUSH_ATTEMPTS:
+            branch = _get_current_branch(vault_path)
+            if not branch:
+                log.warning("Could not determine current branch, skipping pull-rebase")
+                return False
+            if not _pull_rebase(vault_path, branch):
+                return False
+
+    log.warning("Git push failed after all retries", extra={"max_attempts": _MAX_PUSH_ATTEMPTS})
+    return False
 
 
 def git_commit(

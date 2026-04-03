@@ -11,7 +11,9 @@ import pytest
 
 from vault_backup.backup import (
     BackupResult,
+    _get_current_branch,
     _parse_snapshot_id,
+    _pull_rebase,
     _write_state,
     generate_ai_commit_message,
     get_changed_files,
@@ -292,7 +294,174 @@ class TestResticPrune:
         assert f"--keep-monthly={default_config.retention.monthly}" in cmd
 
 
+class TestGetCurrentBranch:
+    def test_returns_branch_name(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.stdout = "master\n"
+        assert _get_current_branch(Path("/vault")) == "master"
+
+    def test_returns_none_on_failure(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.returncode = 1
+        assert _get_current_branch(Path("/vault")) is None
+
+
+class TestPullRebase:
+    def test_succeeds(self, mock_subprocess: MagicMock) -> None:
+        mock_subprocess.return_value.returncode = 0
+        assert _pull_rebase(Path("/vault"), "master") is True
+        cmd = mock_subprocess.call_args[0][0]
+        assert cmd == ["git", "pull", "--rebase", "origin", "master"]
+
+    def test_aborts_on_conflict(self, mock_subprocess: MagicMock) -> None:
+        call_count = 0
+
+        def side_effect(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.stderr = ""
+            if cmd[:2] == ["git", "pull"]:
+                result.returncode = 1
+                result.stderr = "CONFLICT (content): Merge conflict in file.md"
+            else:
+                # git rebase --abort
+                result.returncode = 0
+            result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        assert _pull_rebase(Path("/vault"), "master") is False
+
+        abort_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c[0][0][:2] == ["git", "rebase"]
+        ]
+        assert len(abort_calls) == 1
+        assert abort_calls[0][0][0] == ["git", "rebase", "--abort"]
+
+
 class TestGitPush:
+    def test_push_succeeds_first_attempt(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        mock_subprocess.return_value.returncode = 0
+        mock_subprocess.return_value.stdout = ""
+        result = git_push(config_with_remote, Path(config_with_remote.vault_path))
+        assert result is True
+
+        push_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c[0][0][:2] == ["git", "push"]
+        ]
+        assert len(push_calls) == 1
+
+    def test_push_retries_with_pull_rebase(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """After a rejected push, pull-rebase then retry."""
+        call_sequence: list[list[str]] = []
+
+        def side_effect(cmd, **kwargs):
+            call_sequence.append(cmd)
+            result = MagicMock()
+            result.stderr = ""
+            result.stdout = ""
+            if cmd[:2] == ["git", "push"]:
+                # First push fails, second succeeds
+                if sum(1 for c in call_sequence if c[:2] == ["git", "push"]) == 1:
+                    result.returncode = 1
+                    result.stderr = "rejected (fetch first)"
+                else:
+                    result.returncode = 0
+            elif cmd[:2] == ["git", "rev-parse"]:
+                result.returncode = 0
+                result.stdout = "master\n"
+            elif cmd[:2] == ["git", "pull"]:
+                result.returncode = 0
+            else:
+                result.returncode = 0
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        result = git_push(config_with_remote, Path(config_with_remote.vault_path))
+        assert result is True
+
+        # Should have: push (fail), rev-parse, pull --rebase, push (success)
+        push_calls = [c for c in call_sequence if c[:2] == ["git", "push"]]
+        pull_calls = [c for c in call_sequence if c[:2] == ["git", "pull"]]
+        assert len(push_calls) == 2
+        assert len(pull_calls) == 1
+        assert pull_calls[0] == ["git", "pull", "--rebase", "origin", "master"]
+
+    def test_push_fails_after_rebase_conflict(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """If pull-rebase hits a conflict, push gives up."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            result.stdout = ""
+            if cmd[:2] == ["git", "push"]:
+                result.returncode = 1
+                result.stderr = "rejected (fetch first)"
+            elif cmd[:2] == ["git", "rev-parse"]:
+                result.returncode = 0
+                result.stdout = "master\n"
+            elif cmd[:2] == ["git", "pull"]:
+                result.returncode = 1
+                result.stderr = "CONFLICT"
+            else:
+                result.returncode = 0
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        result = git_push(config_with_remote, Path(config_with_remote.vault_path))
+        assert result is False
+
+    def test_push_fails_when_branch_unknown(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """If we can't determine the branch, bail after first push failure."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            result.stdout = ""
+            if cmd[:2] == ["git", "push"]:
+                result.returncode = 1
+                result.stderr = "rejected"
+            elif cmd[:2] == ["git", "rev-parse"]:
+                result.returncode = 1
+            else:
+                result.returncode = 0
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        result = git_push(config_with_remote, Path(config_with_remote.vault_path))
+        assert result is False
+
+    def test_push_exhausts_retries(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """If push keeps failing after successful rebases, gives up after max attempts."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            result.stdout = ""
+            if cmd[:2] == ["git", "push"]:
+                result.returncode = 1
+                result.stderr = "rejected"
+            elif cmd[:2] == ["git", "rev-parse"]:
+                result.returncode = 0
+                result.stdout = "master\n"
+            elif cmd[:2] == ["git", "pull"]:
+                result.returncode = 0  # rebase succeeds but push still fails (race)
+            else:
+                result.returncode = 0
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        result = git_push(config_with_remote, Path(config_with_remote.vault_path))
+        assert result is False
+
     def test_push_called_after_commit_when_remote_configured(
         self, mock_subprocess: MagicMock, config_with_remote: Config
     ) -> None:
@@ -369,7 +538,13 @@ class TestGitPush:
             elif cmd[0:2] == ["git", "push"]:
                 result.returncode = 1
                 result.stdout = ""
-                result.stderr = "remote: Permission denied"
+                result.stderr = "rejected"
+            elif cmd[:2] == ["git", "rev-parse"]:
+                result.returncode = 0
+                result.stdout = "master\n"
+            elif cmd[:2] == ["git", "pull"]:
+                result.returncode = 1
+                result.stderr = "conflict"
             else:
                 result.returncode = 0
                 result.stdout = ""
