@@ -174,8 +174,11 @@ Or use any OpenAI-compatible API:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DRY_RUN` | `false` | Test mode - no commits or backups |
+| `PIPELINE_STALE_THRESHOLD_SECONDS` | `7200` | Seconds of watcher silence before `sync_pipeline_status` goes stale |
 
-## Health Endpoint
+## Health Endpoints
+
+### `/health` — liveness probe
 
 ```bash
 curl http://localhost:8080/health
@@ -184,13 +187,52 @@ curl http://localhost:8080/health
 ```json
 {
   "status": "healthy",
-  "last_commit": "2024-01-15T10:30:00Z",
-  "last_backup": "2024-01-15T10:30:15Z",
-  "last_change": "2024-01-15T10:25:00Z",
-  "pending_changes": false,
-  "commits_since_backup": 0,
   "uptime_seconds": 3600
 }
+```
+
+Thin liveness wrapper. `status` is `unhealthy` when there are pending changes and no backup in 24+ hours. Safe to use as a Kubernetes/Docker liveness probe.
+
+### `/status` — full pipeline signal
+
+```bash
+curl http://localhost:8080/status
+```
+
+```json
+{
+  "status": "healthy",
+  "sync_pipeline_status": "healthy",
+  "last_watcher_event_at": "2024-01-15T10:30:00Z",
+  "last_change_detected_at": "2024-01-14T09:12:44Z",
+  "last_commit_at": "2024-01-14T09:17:44Z",
+  "last_push_at": "2024-01-14T09:17:46Z",
+  "last_restic_snapshot_at": "2024-01-14T09:17:51Z",
+  "pipeline_stale_threshold_seconds": 7200,
+  "seconds_since_watcher_event": 412,
+  "pending_changes": false,
+  "uptime_seconds": 3600,
+  "upstream_heartbeat": null
+}
+```
+
+`sync_pipeline_status` detects when the upstream sync process (e.g. obsidi-headless) has gone silent, even if no commit-worthy changes have arrived:
+
+- `healthy` — watcher has seen filesystem activity within the threshold window
+- `stale` — no filesystem activity for longer than `PIPELINE_STALE_THRESHOLD_SECONDS` (default 2h). The upstream writer has likely stopped.
+- `unknown` — service just started, no events recorded yet
+
+The key insight: even when the vault is content-quiet, `obsidi-headless`'s `ob sync --continuous` writes ephemeral metadata files (`.obsidian/workspace.json`, lockfiles) at sub-hour cadence. If watcher events stop arriving, the sync process has almost certainly crashed — not just "nothing to sync."
+
+### Gatus monitoring condition
+
+```yaml
+- name: obsidi-backup-pipeline
+  url: http://obsidi-backup:8080/status
+  interval: 5m
+  conditions:
+    - "[STATUS] == 200"
+    - "[BODY].sync_pipeline_status == healthy"
 ```
 
 **Status values:**

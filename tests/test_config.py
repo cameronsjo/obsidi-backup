@@ -184,6 +184,23 @@ class TestConfig:
         assert config.sentry_dsn == "https://key@sentry.io/123"
         assert config.sentry_environment == "staging"
 
+    def test_pipeline_stale_threshold_default(self) -> None:
+        """pipeline_stale_threshold_seconds defaults to 7200."""
+        config = Config()
+        assert config.pipeline_stale_threshold_seconds == 7200
+
+    def test_pipeline_stale_threshold_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PIPELINE_STALE_THRESHOLD_SECONDS env var is parsed correctly."""
+        monkeypatch.setenv("PIPELINE_STALE_THRESHOLD_SECONDS", "3600")
+        config = Config.from_env()
+        assert config.pipeline_stale_threshold_seconds == 3600
+
+    def test_pipeline_stale_threshold_invalid_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-numeric PIPELINE_STALE_THRESHOLD_SECONDS raises a clear ValueError."""
+        monkeypatch.setenv("PIPELINE_STALE_THRESHOLD_SECONDS", "two-hours")
+        with pytest.raises(ValueError, match="PIPELINE_STALE_THRESHOLD_SECONDS must be an integer"):
+            Config.from_env()
+
     def test_sub_configs_loaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RETENTION_DAILY", "30")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")

@@ -248,11 +248,13 @@ def git_push(config: Config, vault_path: Path) -> bool:
 
 
 def git_commit(
-    config: Config, vault_path: Path
+    config: Config, vault_path: Path, state_dir: Path | None = None
 ) -> tuple[bool, str, str, list[str]]:
     """Stage and commit all changes.
 
     Returns (success, summary, commit_message, changed_files).
+
+    If state_dir is provided, writes a ``last_push`` state file on successful push.
     """
     # Stage all changes
     log.info("Staging changes")
@@ -289,7 +291,9 @@ def git_commit(
 
     # Push to remote if configured (non-fatal)
     if config.git_remote_url:
-        git_push(config, vault_path)
+        push_ok = git_push(config, vault_path)
+        if push_ok and state_dir is not None:
+            _write_state(state_dir / "last_push", str(int(datetime.now(UTC).timestamp())))
 
     return True, stats, commit_msg, changed_files
 
@@ -404,9 +408,9 @@ def run_backup(config: Config, state_dir: Path) -> BackupResult:
         log.info("No changes to backup")
         return BackupResult(success=True)
 
-    # Git commit
+    # Git commit (state_dir passed so last_push is written on successful push)
     commit_success, changes_summary, commit_msg, changed_files = git_commit(
-        config, vault_path
+        config, vault_path, state_dir=state_dir
     )
     if not commit_success and changes_summary:
         return BackupResult(

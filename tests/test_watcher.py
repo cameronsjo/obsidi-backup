@@ -169,6 +169,106 @@ class TestDebouncedHandlerEvents:
         callback.assert_called_once()  # Should not propagate exception
 
 
+class TestWatcherEventSignalSplit:
+    """Tests for the watcher-event vs commit-worthy split introduced in the pipeline-health signal."""
+
+    def test_ignored_path_updates_last_watcher_event(self, tmp_state_dir: Path) -> None:
+        """Events on ignored paths (e.g. workspace.json) still record last_watcher_event."""
+        handler = DebouncedHandler(
+            debounce_seconds=60,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        event = MagicMock()
+        event.is_directory = False
+        event.src_path = "/vault/.obsidian/workspace.json"
+        event.event_type = "modified"
+        handler.on_any_event(event)
+
+        assert (tmp_state_dir / "last_watcher_event").exists()
+        assert (tmp_state_dir / "last_watcher_event").read_text().strip() != "0"
+
+    def test_ignored_path_does_not_update_last_change(self, tmp_state_dir: Path) -> None:
+        """Events on ignored paths do NOT write last_change (commit-worthy signal)."""
+        handler = DebouncedHandler(
+            debounce_seconds=60,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        # Initialize last_change to a sentinel so we can detect if it was touched
+        (tmp_state_dir / "last_change").write_text("0")
+
+        event = MagicMock()
+        event.is_directory = False
+        event.src_path = "/vault/.obsidian/workspace.json"
+        event.event_type = "modified"
+        handler.on_any_event(event)
+
+        # last_change should remain 0; no backup should be pending
+        assert (tmp_state_dir / "last_change").read_text().strip() == "0"
+        assert handler._pending is False
+
+    def test_commit_worthy_event_updates_both_signals(self, tmp_state_dir: Path) -> None:
+        """Commit-worthy events update both last_watcher_event AND last_change."""
+        handler = DebouncedHandler(
+            debounce_seconds=60,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        event = MagicMock()
+        event.is_directory = False
+        event.src_path = "/vault/notes/daily.md"
+        event.event_type = "modified"
+        handler.on_any_event(event)
+
+        assert (tmp_state_dir / "last_watcher_event").exists()
+        assert (tmp_state_dir / "last_change").exists()
+        assert handler._pending is True
+        handler.cancel()
+
+    def test_directory_event_updates_neither_signal(self, tmp_state_dir: Path) -> None:
+        """Directory events update neither last_watcher_event nor last_change."""
+        handler = DebouncedHandler(
+            debounce_seconds=60,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        (tmp_state_dir / "last_watcher_event").write_text("0")
+        (tmp_state_dir / "last_change").write_text("0")
+
+        event = MagicMock()
+        event.is_directory = True
+        event.src_path = "/vault/notes/"
+        event.event_type = "created"
+        handler.on_any_event(event)
+
+        assert (tmp_state_dir / "last_watcher_event").read_text().strip() == "0"
+        assert (tmp_state_dir / "last_change").read_text().strip() == "0"
+        assert handler._pending is False
+
+    def test_git_segment_ignored_but_watcher_event_recorded(self, tmp_state_dir: Path) -> None:
+        """Events under .git are filtered for commits but still recorded as watcher activity."""
+        handler = DebouncedHandler(
+            debounce_seconds=60,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        (tmp_state_dir / "last_change").write_text("0")
+
+        event = MagicMock()
+        event.is_directory = False
+        event.src_path = "/vault/.git/objects/abc123"
+        event.event_type = "created"
+        handler.on_any_event(event)
+
+        # Watcher event recorded
+        assert (tmp_state_dir / "last_watcher_event").exists()
+        assert (tmp_state_dir / "last_watcher_event").read_text().strip() != "0"
+        # But last_change NOT updated (commit filter still applies)
+        assert (tmp_state_dir / "last_change").read_text().strip() == "0"
+        assert handler._pending is False
+
+
 class TestVaultWatcher:
     def test_creates_handler_and_observer(self, default_config: Config) -> None:
         callback = MagicMock()

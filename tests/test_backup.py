@@ -577,6 +577,127 @@ class TestGitPush:
         assert len(push_calls) == 0
 
 
+class TestLastPushStateFile:
+    """Tests that last_push state file is written correctly on git push."""
+
+    def test_last_push_written_on_successful_push(
+        self, mock_subprocess: MagicMock, config_with_remote: Config, tmp_state_dir: Path
+    ) -> None:
+        """last_push state file is written when push succeeds."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if cmd[0:3] == ["git", "diff", "--cached"]:
+                if "--name-only" in cmd:
+                    result.stdout = "notes/daily.md\n"
+                else:
+                    result.stdout = " 1 file changed, 5 insertions(+)"
+            elif cmd[0:2] == ["git", "commit"]:
+                result.stdout = "[main abc1234] vault: auto-backup\n"
+            else:
+                result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        git_commit(config_with_remote, Path(config_with_remote.vault_path), state_dir=tmp_state_dir)
+
+        assert (tmp_state_dir / "last_push").exists()
+        ts = float((tmp_state_dir / "last_push").read_text())
+        import time
+        assert ts > 0
+        assert abs(ts - time.time()) < 5
+
+    def test_last_push_not_written_on_push_failure(
+        self, mock_subprocess: MagicMock, config_with_remote: Config, tmp_state_dir: Path
+    ) -> None:
+        """last_push state file is NOT written when push fails."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.stderr = ""
+            result.stdout = ""
+            if cmd[0:3] == ["git", "diff", "--cached"]:
+                result.returncode = 0
+                if "--name-only" in cmd:
+                    result.stdout = "notes/daily.md\n"
+                else:
+                    result.stdout = " 1 file changed, 5 insertions(+)"
+            elif cmd[0:2] == ["git", "commit"]:
+                result.returncode = 0
+                result.stdout = "[main abc1234] vault: auto-backup\n"
+            elif cmd[0:2] == ["git", "push"]:
+                result.returncode = 1
+                result.stderr = "rejected"
+            elif cmd[:2] == ["git", "rev-parse"]:
+                result.returncode = 0
+                result.stdout = "master\n"
+            elif cmd[:2] == ["git", "pull"]:
+                result.returncode = 1
+                result.stderr = "conflict"
+            else:
+                result.returncode = 0
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        git_commit(config_with_remote, Path(config_with_remote.vault_path), state_dir=tmp_state_dir)
+
+        assert not (tmp_state_dir / "last_push").exists()
+
+    def test_last_push_not_written_when_no_state_dir(
+        self, mock_subprocess: MagicMock, config_with_remote: Config
+    ) -> None:
+        """When state_dir is None (old call site), no last_push is written (back-compat)."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if cmd[0:3] == ["git", "diff", "--cached"]:
+                if "--name-only" in cmd:
+                    result.stdout = "notes/daily.md\n"
+                else:
+                    result.stdout = " 1 file changed, 5 insertions(+)"
+            elif cmd[0:2] == ["git", "commit"]:
+                result.stdout = "[main abc1234] vault: auto-backup\n"
+            else:
+                result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        # Should not raise even with no state_dir
+        success, _, _, _ = git_commit(
+            config_with_remote, Path(config_with_remote.vault_path), state_dir=None
+        )
+        assert success is True
+
+    def test_run_backup_writes_last_push_on_success(
+        self, mock_subprocess: MagicMock, config_with_remote: Config, tmp_state_dir: Path
+    ) -> None:
+        """run_backup writes last_push when push succeeds via the state_dir param."""
+        def side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stderr = ""
+            if cmd[:2] == ["git", "status"]:
+                result.stdout = " M file.md\n"
+            elif "--name-only" in cmd:
+                result.stdout = "file.md\n"
+            elif "--stat" in cmd:
+                result.stdout = " 1 file changed"
+            elif cmd[:2] == ["git", "commit"]:
+                result.stdout = "[main abc] vault: auto-backup\n"
+            elif cmd[:2] == ["restic", "backup"]:
+                result.stdout = "snapshot ab12cd34 saved"
+            else:
+                result.stdout = ""
+            return result
+
+        mock_subprocess.side_effect = side_effect
+        result = run_backup(config_with_remote, tmp_state_dir)
+        assert result.success is True
+        assert result.commit_created is True
+        assert (tmp_state_dir / "last_push").exists()
+
+
 class TestRunBackup:
     def test_no_changes_returns_success(
         self, mock_subprocess: MagicMock, default_config: Config, tmp_state_dir: Path

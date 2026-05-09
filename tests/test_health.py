@@ -214,3 +214,168 @@ class TestHealthServer:
         assert hs.thread is not None
         assert hs.thread.is_alive()
         hs.stop()
+
+
+class TestStatusDict:
+    """Tests for HealthState.to_status_dict() — the /status payload."""
+
+    def test_unknown_when_no_watcher_event(self, default_config: Config) -> None:
+        """sync_pipeline_status is unknown when last_watcher_event has never fired."""
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["sync_pipeline_status"] == "unknown"
+        assert result["seconds_since_watcher_event"] is None
+        assert result["last_watcher_event_at"] is None
+
+    def test_unknown_when_watcher_event_is_zero(
+        self, default_config: Config, tmp_state_dir: Path
+    ) -> None:
+        """Sentinel value 0 (written by initialize_state_dir) counts as unknown."""
+        (tmp_state_dir / "last_watcher_event").write_text("0")
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["sync_pipeline_status"] == "unknown"
+
+    def test_healthy_when_recent_watcher_event(
+        self, default_config: Config, tmp_state_dir: Path
+    ) -> None:
+        """sync_pipeline_status healthy when event is within threshold."""
+        (tmp_state_dir / "last_watcher_event").write_text(str(int(time.time() - 60)))
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["sync_pipeline_status"] == "healthy"
+        assert result["seconds_since_watcher_event"] is not None
+        assert result["seconds_since_watcher_event"] < default_config.pipeline_stale_threshold_seconds
+
+    def test_stale_when_old_watcher_event(
+        self, default_config: Config, tmp_state_dir: Path
+    ) -> None:
+        """sync_pipeline_status stale when event exceeds threshold."""
+        old_ts = time.time() - (default_config.pipeline_stale_threshold_seconds + 1)
+        (tmp_state_dir / "last_watcher_event").write_text(str(int(old_ts)))
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["sync_pipeline_status"] == "stale"
+        assert result["seconds_since_watcher_event"] >= default_config.pipeline_stale_threshold_seconds
+
+    def test_stale_at_exact_threshold(
+        self, default_config: Config, tmp_state_dir: Path
+    ) -> None:
+        """Event exactly at threshold boundary is stale (>=)."""
+        old_ts = time.time() - default_config.pipeline_stale_threshold_seconds
+        (tmp_state_dir / "last_watcher_event").write_text(str(int(old_ts)))
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["sync_pipeline_status"] == "stale"
+
+    def test_full_shape(self, default_config: Config) -> None:
+        """All expected keys are present in the /status response."""
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        expected_keys = {
+            "status",
+            "sync_pipeline_status",
+            "last_watcher_event_at",
+            "last_change_detected_at",
+            "last_commit_at",
+            "last_push_at",
+            "last_restic_snapshot_at",
+            "pipeline_stale_threshold_seconds",
+            "seconds_since_watcher_event",
+            "pending_changes",
+            "uptime_seconds",
+            "upstream_heartbeat",
+        }
+        assert expected_keys.issubset(result.keys())
+
+    def test_last_push_at_roundtrips(self, default_config: Config, tmp_state_dir: Path) -> None:
+        """last_push_at reflects the last_push state file."""
+        ts = int(time.time())
+        (tmp_state_dir / "last_push").write_text(str(ts))
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["last_push_at"] is not None
+        assert result["last_push_at"].endswith("Z")
+
+    def test_upstream_heartbeat_is_null(self, default_config: Config) -> None:
+        """upstream_heartbeat is null — placeholder for future coupling."""
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["upstream_heartbeat"] is None
+
+    def test_pipeline_stale_threshold_present(self, default_config: Config) -> None:
+        """pipeline_stale_threshold_seconds echoes config value."""
+        state = HealthState(config=default_config)
+        result = state.to_status_dict()
+        assert result["pipeline_stale_threshold_seconds"] == default_config.pipeline_stale_threshold_seconds
+
+
+class TestStatusEndpoint:
+    """HTTP-level tests for /status route."""
+
+    @pytest.fixture()
+    def health_server(self, default_config: Config):
+        """Start a real health server for testing."""
+        import vault_backup.health as health_mod
+
+        health_mod._health_state = HealthState(config=default_config)
+        server = HTTPServer(("127.0.0.1", 0), HealthHandler)
+        port = server.server_address[1]
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        yield f"http://127.0.0.1:{port}"
+        server.shutdown()
+        health_mod._health_state = None
+
+    def test_status_endpoint_returns_200(self, health_server: str) -> None:
+        import urllib.request
+
+        resp = urllib.request.urlopen(f"{health_server}/status")
+        assert resp.status == 200
+
+    def test_status_endpoint_shape(self, health_server: str) -> None:
+        import urllib.request
+
+        resp = urllib.request.urlopen(f"{health_server}/status")
+        body = json.loads(resp.read())
+        assert "sync_pipeline_status" in body
+        assert "last_watcher_event_at" in body
+        assert "last_change_detected_at" in body
+        assert "last_commit_at" in body
+        assert "last_push_at" in body
+        assert "last_restic_snapshot_at" in body
+        assert "pipeline_stale_threshold_seconds" in body
+        assert "upstream_heartbeat" in body
+        assert body["upstream_heartbeat"] is None
+
+    def test_status_trailing_slash(self, health_server: str) -> None:
+        import urllib.request
+
+        resp = urllib.request.urlopen(f"{health_server}/status/")
+        assert resp.status == 200
+
+    def test_health_backcompat(self, health_server: str) -> None:
+        """Existing /health callers still get status + uptime_seconds."""
+        import urllib.request
+
+        resp = urllib.request.urlopen(f"{health_server}/health")
+        body = json.loads(resp.read())
+        assert body["status"] == "healthy"
+        assert "uptime_seconds" in body
+
+    def test_status_500_when_not_initialized(self) -> None:
+        import urllib.error
+        import urllib.request
+        import vault_backup.health as health_mod
+
+        health_mod._health_state = None
+        server = HTTPServer(("127.0.0.1", 0), HealthHandler)
+        port = server.server_address[1]
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/status")
+            assert exc_info.value.code == 500
+        finally:
+            server.shutdown()

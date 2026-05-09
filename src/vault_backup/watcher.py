@@ -71,6 +71,12 @@ class DebouncedHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
+        # Record every non-directory event BEFORE the ignore filter.
+        # This gives us a signal that the upstream writer (obsidi-headless) is
+        # alive even when it only writes ephemeral metadata that we filter out
+        # for commit purposes (workspace.json, .git internals, etc.).
+        (self.state_dir / "last_watcher_event").write_text(str(int(time.time())))
+
         if self._should_ignore(event.src_path):
             return
 
