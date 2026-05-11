@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `EXCLUDED_PATHS` config (default `.claude`) — paths the backup must never
+  stage or commit, applied as `git add` pathspec exclusions (`-- :!path`).
+  Symmetric protection for two-writer vaults: if `.claude/` (or any other
+  client-owned dotfolder) disappears from the server's working tree, the
+  deletion is no longer recorded into the backup commit stream.
+
+### Fixed
+
+- Server-side rebase loop when `.claude/` working tree drifts from origin
+  (closes the gap behind the 2026-05-10 stuck-push incident: when Obsidian
+  Sync didn't materialize `.claude/` on the server, `git add -A` recorded
+  every tracked `.claude/` file as deleted, which then conflicted against
+  Mac-side `.claude/` commits during rebase).
+
 ## [1.0.0] - 2026-01-25
 
 ### Added

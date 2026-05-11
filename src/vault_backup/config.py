@@ -130,6 +130,12 @@ class Config:
     git_user_name: str = "Obsidian Backup"
     git_user_email: str = "backup@local"
     git_remote_url: str | None = None
+    # Paths the backup must never stage/commit, even if they appear or
+    # disappear on disk. Applied as `git add` pathspec exclusions
+    # (`-- :!path`). Use case: client-authored dotfolders like `.claude/`
+    # that another writer (chezmoi, a different device) owns. Server
+    # drift in these paths must not enter the backup commit stream.
+    excluded_paths: tuple[str, ...] = (".claude",)
 
     # Feature flags
     dry_run: bool = False
@@ -153,6 +159,11 @@ class Config:
             git_user_name=os.environ.get("GIT_USER_NAME", "Obsidian Backup"),
             git_user_email=os.environ.get("GIT_USER_EMAIL", "backup@local"),
             git_remote_url=os.environ.get("GIT_REMOTE_URL"),
+            excluded_paths=tuple(
+                p.strip()
+                for p in os.environ.get("EXCLUDED_PATHS", ".claude").split(",")
+                if p.strip()
+            ),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("true", "1", "yes"),
             sentry_dsn=os.environ.get("SENTRY_DSN"),
             sentry_environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),

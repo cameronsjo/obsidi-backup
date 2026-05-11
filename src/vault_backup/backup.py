@@ -254,9 +254,17 @@ def git_commit(
 
     Returns (success, summary, commit_message, changed_files).
     """
-    # Stage all changes
-    log.info("Staging changes")
-    run_cmd(["git", "add", "-A"], cwd=vault_path)
+    # Stage all changes, excluding configured paths. Exclusions are
+    # passed as pathspec magic (`:!path`) after `--` so git treats them
+    # as exclusions rather than positional arguments. This is the
+    # symmetric counterpart to client-side hooks that prevent vault
+    # writes — neither writer can stomp on the other's territory.
+    log.info("Staging changes", extra={"excluded_paths": list(config.excluded_paths)})
+    add_cmd = ["git", "add", "-A"]
+    if config.excluded_paths:
+        add_cmd.append("--")
+        add_cmd.extend(f":!{p}" for p in config.excluded_paths)
+    run_cmd(add_cmd, cwd=vault_path)
 
     changed_files = get_changed_files(vault_path)
     if not changed_files:

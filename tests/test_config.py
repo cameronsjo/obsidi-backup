@@ -151,6 +151,30 @@ class TestConfig:
         assert config.git_user_email == "test@example.com"
         assert config.dry_run is True
 
+    def test_default_excluded_paths(self) -> None:
+        """`.claude` is excluded by default — protects client-owned config."""
+        assert Config().excluded_paths == (".claude",)
+
+    def test_excluded_paths_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EXCLUDED_PATHS", ".claude,.obsidian/workspace.json,private")
+        config = Config.from_env()
+        assert config.excluded_paths == (
+            ".claude",
+            ".obsidian/workspace.json",
+            "private",
+        )
+
+    def test_excluded_paths_strips_whitespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EXCLUDED_PATHS", "  .claude , .obsidian ")
+        assert Config.from_env().excluded_paths == (".claude", ".obsidian")
+
+    def test_excluded_paths_empty_env_means_empty_tuple(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setting EXCLUDED_PATHS to empty string disables exclusions."""
+        monkeypatch.setenv("EXCLUDED_PATHS", "")
+        assert Config.from_env().excluded_paths == ()
+
     def test_dry_run_variants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for truthy in ("true", "1", "yes", "TRUE", "Yes"):
             monkeypatch.setenv("DRY_RUN", truthy)

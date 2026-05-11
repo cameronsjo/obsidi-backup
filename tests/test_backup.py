@@ -228,6 +228,62 @@ class TestGitCommit:
         assert "vault:" in commit_msg
         assert changed_files == ["notes/daily.md"]
 
+    def test_default_excludes_dot_claude_from_staging(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        """`git add` must include `:!.claude` pathspec by default.
+
+        Regression for 2026-05-10: when `.claude/` disappears from disk
+        on the server, an unscoped `git add -A` records the absence as
+        deletions and triggers rebase conflicts against client commits.
+        """
+        mock_subprocess.return_value.stdout = ""
+        git_commit(default_config, Path("/vault"))
+
+        add_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:3] == ["git", "add", "-A"]
+        ]
+        assert add_calls, "git add was not invoked"
+        cmd = add_calls[0].args[0]
+        assert "--" in cmd, f"pathspec separator missing: {cmd}"
+        assert ":!.claude" in cmd, f"`:!.claude` exclusion missing: {cmd}"
+
+    def test_custom_excluded_paths_are_applied(self, mock_subprocess: MagicMock) -> None:
+        """Multiple excluded paths each appear as pathspec exclusions."""
+        config = Config(
+            vault_path="/vault",
+            state_dir="/state",
+            excluded_paths=(".claude", ".obsidian/workspace.json", "Inbox/private"),
+        )
+        mock_subprocess.return_value.stdout = ""
+        git_commit(config, Path("/vault"))
+
+        add_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:3] == ["git", "add", "-A"]
+        ]
+        assert add_calls
+        cmd = add_calls[0].args[0]
+        assert cmd.index("--") < cmd.index(":!.claude")
+        assert ":!.obsidian/workspace.json" in cmd
+        assert ":!Inbox/private" in cmd
+
+    def test_empty_excluded_paths_omits_pathspec(self, mock_subprocess: MagicMock) -> None:
+        """An empty exclusion list means no `--` separator (back-compat)."""
+        config = Config(vault_path="/vault", state_dir="/state", excluded_paths=())
+        mock_subprocess.return_value.stdout = ""
+        git_commit(config, Path("/vault"))
+
+        add_calls = [
+            c for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:3] == ["git", "add", "-A"]
+        ]
+        assert add_calls
+        cmd = add_calls[0].args[0]
+        assert "--" not in cmd
+        assert cmd == ["git", "add", "-A"]
+
     def test_dry_run_resets_staging(self, mock_subprocess: MagicMock) -> None:
         config = Config(vault_path="/vault", state_dir="/state", dry_run=True)
 
