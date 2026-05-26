@@ -254,17 +254,25 @@ def git_commit(
 
     Returns (success, summary, commit_message, changed_files).
     """
-    # Stage all changes, excluding configured paths. Exclusions are
-    # passed as pathspec magic (`:!path`) after `--` so git treats them
-    # as exclusions rather than positional arguments. This is the
-    # symmetric counterpart to client-side hooks that prevent vault
-    # writes — neither writer can stomp on the other's territory.
+    # Stage all changes, then unstage the configured exclusions. We do NOT
+    # use `git add -A -- ':!<path>'` exclude pathspecs: under git >= 2.x
+    # (observed on 2.52.0) that command exits 1 when an excluded path is also
+    # matched by .gitignore, raising CalledProcessError and aborting the whole
+    # backup (restic included). `git add -A` alone only emits an advisory
+    # warning for ignored paths, and `git reset` reliably keeps the exclusions
+    # out of the commit. This is the symmetric counterpart to client-side hooks
+    # that prevent vault writes — neither writer can stomp on the other's
+    # territory. See https://github.com/cameronsjo/obsidi-backup/issues/5.
     log.info("Staging changes", extra={"excluded_paths": list(config.excluded_paths)})
-    add_cmd = ["git", "add", "-A"]
+    run_cmd(["git", "add", "-A"], cwd=vault_path)
     if config.excluded_paths:
-        add_cmd.append("--")
-        add_cmd.extend(f":!{p}" for p in config.excluded_paths)
-    run_cmd(add_cmd, cwd=vault_path)
+        # check=False: `git reset` exits 0 for paths with nothing staged, but
+        # guard against any edge case rather than aborting an otherwise-good run.
+        run_cmd(
+            ["git", "reset", "-q", "--", *config.excluded_paths],
+            cwd=vault_path,
+            check=False,
+        )
 
     changed_files = get_changed_files(vault_path)
     if not changed_files:
