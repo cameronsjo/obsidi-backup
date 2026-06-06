@@ -23,6 +23,18 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(msg) from None
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable.
+
+    Truthy values: ``true``, ``1``, ``yes`` (case-insensitive).
+    Everything else is falsy.  Missing env var returns *default*.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in ("true", "1", "yes")
+
+
 class NotifyLevel(Enum):
     """When to send notifications."""
 
@@ -115,6 +127,38 @@ class NotifyConfig:
 
 
 @dataclass(frozen=True)
+class RenamerConfig:
+    """Configuration for the UntitledRenamer hook."""
+
+    # Master switch — off by default to avoid surprise renames
+    enabled: bool = False
+    # Regex pattern that a filename must match to be renamed
+    pattern: str = r"^Untitled(?: \d+)?\.md$"
+    # Minimum body length (after frontmatter strip) before calling LLM
+    min_body_chars: int = 200
+    # Maximum body excerpt length sent to LLM
+    excerpt_chars: int = 1500
+    # Maximum characters in the generated title
+    max_title_chars: int = 120
+    # Maximum renames triggered per dispatch window (bounds LLM spend)
+    max_per_batch: int = 10
+    # Seconds to suppress further events for a path after a rename
+    suppress_ttl_seconds: int = 30
+
+    @classmethod
+    def from_env(cls) -> Self:
+        return cls(
+            enabled=_bool_env("RENAMER_ENABLED", False),
+            pattern=os.environ.get("RENAMER_PATTERN", r"^Untitled(?: \d+)?\.md$"),
+            min_body_chars=_int_env("RENAMER_MIN_BODY_CHARS", 200),
+            excerpt_chars=_int_env("RENAMER_EXCERPT_CHARS", 1500),
+            max_title_chars=_int_env("RENAMER_MAX_TITLE_CHARS", 120),
+            max_per_batch=_int_env("RENAMER_MAX_PER_BATCH", 10),
+            suppress_ttl_seconds=_int_env("RENAMER_SUPPRESS_TTL_SECONDS", 30),
+        )
+
+
+@dataclass(frozen=True)
 class Config:
     """Application configuration."""
 
@@ -148,6 +192,7 @@ class Config:
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
     llm: LLMConfig = field(default_factory=LLMConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    renamer: RenamerConfig = field(default_factory=RenamerConfig)
 
     @classmethod
     def from_env(cls) -> Self:
@@ -170,4 +215,5 @@ class Config:
             retention=RetentionPolicy.from_env(),
             llm=LLMConfig.from_env(),
             notify=NotifyConfig.from_env(),
+            renamer=RenamerConfig.from_env(),
         )
