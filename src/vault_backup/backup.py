@@ -173,6 +173,31 @@ def _call_openai_compatible(config: Config, prompt: str) -> str | None:
         return message
 
 
+def generate_title(config: Config, body_excerpt: str) -> str | None:
+    """Generate a note title from a body excerpt using the configured LLM.
+
+    The excerpt should already be frontmatter-stripped and bounded by the
+    caller.  Returns ``None`` when LLM is disabled or on any transport error.
+    """
+    if not config.llm.enabled:
+        return None
+
+    prompt = (
+        "Generate a short, descriptive title for the following note content. "
+        "Return only the title — no quotes, no explanation, no punctuation at end. "
+        "Max 10 words. Be specific about the subject matter.\n\n"
+        f"Note content:\n{body_excerpt}"
+    )
+
+    try:
+        if config.llm.llm_api_url:
+            return _call_openai_compatible(config, prompt)
+        return _call_anthropic(config, prompt)
+    except Exception:
+        log.warning("Title generation failed", exc_info=True)
+        return None
+
+
 _MAX_PUSH_ATTEMPTS = 3
 
 
