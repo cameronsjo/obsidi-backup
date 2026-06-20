@@ -125,6 +125,7 @@ class Config:
     # Timing
     debounce_seconds: int = 300
     health_port: int = 8080
+    pipeline_stale_threshold_seconds: int = 7200
 
     # Git
     git_user_name: str = "Obsidian Backup"
@@ -156,6 +157,7 @@ class Config:
             state_dir=os.environ.get("STATE_DIR", "/app/state"),
             debounce_seconds=_int_env("DEBOUNCE_SECONDS", 300),
             health_port=_int_env("HEALTH_PORT", 8080),
+            pipeline_stale_threshold_seconds=_int_env("PIPELINE_STALE_THRESHOLD_SECONDS", 7200),
             git_user_name=os.environ.get("GIT_USER_NAME", "Obsidian Backup"),
             git_user_email=os.environ.get("GIT_USER_EMAIL", "backup@local"),
             git_remote_url=os.environ.get("GIT_REMOTE_URL"),

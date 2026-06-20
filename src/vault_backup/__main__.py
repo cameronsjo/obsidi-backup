@@ -96,6 +96,8 @@ def initialize_state_dir(state_dir: Path) -> None:
         "last_commit": "0",
         "last_backup": "0",
         "last_change": "0",
+        "last_watcher_event": "0",
+        "last_push": "0",
         "pending_changes": "false",
     }
 

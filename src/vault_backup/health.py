@@ -31,7 +31,7 @@ class HealthState:
     start_time: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
-        """Generate health status dictionary."""
+        """Generate health status dictionary (legacy /health shape)."""
         state_dir = Path(self.config.state_dir)
         vault_path = Path(self.config.vault_path)
         now = time.time()
@@ -67,6 +67,55 @@ class HealthState:
             "commits_since_backup": commits_since_backup,
             "sync_state": sync_state,
             "uptime_seconds": int(now - self.start_time),
+        }
+
+    def to_status_dict(self) -> dict[str, Any]:
+        """Generate full pipeline status dictionary for /status endpoint."""
+        state_dir = Path(self.config.state_dir)
+        now = time.time()
+
+        # Read all state files
+        last_watcher_event = self._read_timestamp(state_dir / "last_watcher_event")
+        last_change_detected = self._read_timestamp(state_dir / "last_change")
+        last_commit = self._read_timestamp(state_dir / "last_commit")
+        last_push = self._read_timestamp(state_dir / "last_push")
+        last_restic_snapshot = self._read_timestamp(state_dir / "last_backup")
+        pending_changes = self._read_bool(state_dir / "pending_changes")
+
+        # Derive sync_pipeline_status
+        threshold = self.config.pipeline_stale_threshold_seconds
+        if last_watcher_event is None or last_watcher_event <= 0:
+            sync_pipeline_status = "unknown"
+            seconds_since_watcher_event = None
+        else:
+            seconds_since_watcher_event = int(now - last_watcher_event)
+            if seconds_since_watcher_event >= threshold:
+                sync_pipeline_status = "stale"
+            else:
+                sync_pipeline_status = "healthy"
+
+        # Determine overall status (mirrors /health liveness logic)
+        last_backup_ts = last_restic_snapshot
+        last_change_ts = last_change_detected
+        status = "healthy"
+        if last_backup_ts:
+            seconds_since_backup = now - last_backup_ts
+            if seconds_since_backup > 86400 and last_change_ts and last_change_ts > last_backup_ts:
+                status = "unhealthy"
+
+        return {
+            "status": status,
+            "sync_pipeline_status": sync_pipeline_status,
+            "last_watcher_event_at": self._timestamp_to_iso(last_watcher_event),
+            "last_change_detected_at": self._timestamp_to_iso(last_change_detected),
+            "last_commit_at": self._timestamp_to_iso(last_commit),
+            "last_push_at": self._timestamp_to_iso(last_push),
+            "last_restic_snapshot_at": self._timestamp_to_iso(last_restic_snapshot),
+            "pipeline_stale_threshold_seconds": threshold,
+            "seconds_since_watcher_event": seconds_since_watcher_event,
+            "pending_changes": pending_changes,
+            "uptime_seconds": int(now - self.start_time),
+            "upstream_heartbeat": None,
         }
 
     @staticmethod
@@ -134,18 +183,42 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_health()
         elif self.path in ("/ready", "/ready/"):
             self._send_ready()
+        elif self.path in ("/status", "/status/"):
+            self._send_status()
         else:
             self._send_not_found()
 
     def _send_health(self) -> None:
-        """Send health status response."""
+        """Send liveness health response (back-compat thin wrapper)."""
         with _health_state_lock:
             state = _health_state
         if state is None:
             self._send_error(500, "Health state not initialized")
             return
 
-        body = json.dumps(state.to_dict(), indent=2).encode()
+        data = state.to_dict()
+        body = json.dumps(
+            {
+                "status": data["status"],
+                "uptime_seconds": data["uptime_seconds"],
+            },
+            indent=2,
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_status(self) -> None:
+        """Send full pipeline status response."""
+        with _health_state_lock:
+            state = _health_state
+        if state is None:
+            self._send_error(500, "Health state not initialized")
+            return
+
+        body = json.dumps(state.to_status_dict(), indent=2).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
