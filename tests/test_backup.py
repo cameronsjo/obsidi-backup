@@ -231,26 +231,39 @@ class TestGitCommit:
     def test_default_excludes_dot_claude_from_staging(
         self, mock_subprocess: MagicMock, default_config: Config
     ) -> None:
-        """`git add` must include `:!.claude` pathspec by default.
+        """`.claude` is kept out of the commit by unstaging, not by a
+        `git add` exclude pathspec.
 
-        Regression for 2026-05-10: when `.claude/` disappears from disk
-        on the server, an unscoped `git add -A` records the absence as
-        deletions and triggers rebase conflicts against client commits.
+        Regression for 2026-05-10: when `.claude/` disappears from disk on
+        the server, those changes must not be committed (they record
+        deletions and trigger rebase conflicts against client commits).
+        We achieve this with `git add -A` + `git reset -- .claude` rather
+        than `git add -A -- ':!.claude'`; the latter exits 1 under git
+        >= 2.52 when `.claude` is gitignored, aborting the backup (see #5).
         """
         mock_subprocess.return_value.stdout = ""
         git_commit(default_config, Path("/vault"))
 
+        # `git add -A` is invoked unscoped — no `:!` exclude pathspec.
         add_calls = [
             c for c in mock_subprocess.call_args_list
             if c.args and c.args[0][:3] == ["git", "add", "-A"]
         ]
         assert add_calls, "git add was not invoked"
-        cmd = add_calls[0].args[0]
-        assert "--" in cmd, f"pathspec separator missing: {cmd}"
-        assert ":!.claude" in cmd, f"`:!.claude` exclusion missing: {cmd}"
+        add_cmd = add_calls[0].args[0]
+        assert add_cmd == ["git", "add", "-A"], f"git add must be unscoped: {add_cmd}"
+
+        # `.claude` is excluded via a follow-up `git reset`.
+        reset_cmds = [
+            c.args[0] for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:2] == ["git", "reset"]
+        ]
+        assert any(".claude" in cmd for cmd in reset_cmds), (
+            f"`.claude` exclusion reset missing: {reset_cmds}"
+        )
 
     def test_custom_excluded_paths_are_applied(self, mock_subprocess: MagicMock) -> None:
-        """Multiple excluded paths each appear as pathspec exclusions."""
+        """Every excluded path is unstaged after `git add -A`."""
         config = Config(
             vault_path="/vault",
             state_dir="/state",
@@ -259,15 +272,19 @@ class TestGitCommit:
         mock_subprocess.return_value.stdout = ""
         git_commit(config, Path("/vault"))
 
-        add_calls = [
-            c for c in mock_subprocess.call_args_list
-            if c.args and c.args[0][:3] == ["git", "add", "-A"]
+        reset_cmds = [
+            c.args[0] for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:2] == ["git", "reset"]
         ]
-        assert add_calls
-        cmd = add_calls[0].args[0]
-        assert cmd.index("--") < cmd.index(":!.claude")
-        assert ":!.obsidian/workspace.json" in cmd
-        assert ":!Inbox/private" in cmd
+        exclusion_reset = next((cmd for cmd in reset_cmds if ".claude" in cmd), None)
+        assert exclusion_reset is not None, f"exclusion reset missing: {reset_cmds}"
+        assert "--" in exclusion_reset, f"pathspec separator missing: {exclusion_reset}"
+        sep = exclusion_reset.index("--")
+        assert exclusion_reset[sep + 1:] == [
+            ".claude",
+            ".obsidian/workspace.json",
+            "Inbox/private",
+        ]
 
     def test_empty_excluded_paths_omits_pathspec(self, mock_subprocess: MagicMock) -> None:
         """An empty exclusion list means no `--` separator (back-compat)."""
