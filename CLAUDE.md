@@ -106,10 +106,6 @@ uv run --extra dev pytest tests/test_health.py -v               # Single module
 
 ## Issue Tracking
 
-Uses [beads](https://github.com/synthase/beads) for git-backed issue tracking. Issue prefix: `ovb`.
-
-```bash
-bd ready          # Show ready work
-bd list --all     # All issues
-bd stats          # Project stats
-```
+Uses GitHub issues. `bd` (beads) was retired per
+[cadence-groundwork#138](https://github.com/cameronsjo/cadence-groundwork/issues/138) —
+`.beads/` is dormant historical data, not the work queue.
