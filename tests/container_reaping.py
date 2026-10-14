@@ -21,19 +21,25 @@ for _ in range(12):
         os._exit(0)
     os.waitpid(pid, 0)
 
-time.sleep(1)
-zombies = []
-for entry in Path("/proc").iterdir():
-    if not entry.name.isdigit():
-        continue
-    try:
-        fields = (entry / "stat").read_text().split()
-    except FileNotFoundError:
-        continue
-    if fields[1] == "(git)" and fields[2] == "Z":
-        zombies.append(entry.name)
+deadline = time.monotonic() + 5
+while True:
+    git_processes = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().split()
+        except FileNotFoundError:
+            continue
+        if fields[1] == "(git)":
+            git_processes[entry.name] = fields[2]
+    # Wait for running children as well as zombies, avoiding an early false pass.
+    if not git_processes or time.monotonic() >= deadline:
+        break
+    time.sleep(0.05)
+zombies = [pid for pid, state in git_processes.items() if state == "Z"]
 print(f"PID 1: {Path('/proc/1/comm').read_text().strip()}; git zombies: {zombies}", flush=True)
-assert not zombies, f"Orphaned git processes were not reaped: {zombies}"
+assert not git_processes, f"Git processes remain after bounded reaping poll: {git_processes}"
 """
 
 
