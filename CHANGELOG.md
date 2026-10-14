@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reap orphaned git subprocesses with tini as the container's PID 1, avoiding
+  zombie accumulation during long-running backups.
 - Server-side rebase loop when `.claude/` working tree drifts from origin
   (closes the gap behind the 2026-05-10 stuck-push incident: when Obsidian
   Sync didn't materialize `.claude/` on the server, `git add -A` recorded
