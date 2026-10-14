@@ -21,7 +21,8 @@ RUN apk add --no-cache \
     openssh-client \
     restic \
     tzdata \
-    curl
+    curl \
+    tini
 
 # Install Python package
 COPY --from=builder /wheels /wheels
@@ -53,4 +54,6 @@ USER root
 
 COPY LICENSE /licenses/LICENSE
 
-ENTRYPOINT ["python", "-m", "vault_backup"]
+# Reap orphaned descendants and forward shutdown signals to the application.
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["python", "-m", "vault_backup"]
