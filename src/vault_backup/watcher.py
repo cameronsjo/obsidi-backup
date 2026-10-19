@@ -33,6 +33,11 @@ class DebouncedHandler(FileSystemEventHandler):
         ".obsidian/workspace-mobile.json",
     }
 
+    # Read-only inotify events (watchdog >= 5). The backup run itself reads vault
+    # files (git status/add), which emits these; counting them re-triggers a
+    # backup after every run.
+    IGNORE_EVENT_TYPES = {"opened", "closed_no_write"}
+
     def __init__(
         self,
         debounce_seconds: int,
@@ -80,6 +85,9 @@ class DebouncedHandler(FileSystemEventHandler):
     def on_any_event(self, event: FileSystemEvent) -> None:
         """Handle any file system event."""
         if event.is_directory:
+            return
+
+        if event.event_type in self.IGNORE_EVENT_TYPES:
             return
 
         # Record every non-directory event BEFORE the ignore filter.

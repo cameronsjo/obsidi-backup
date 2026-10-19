@@ -403,6 +403,36 @@ def _write_state(path: Path, value: str) -> None:
         log.warning("Failed to write state file", extra={"path": str(path)}, exc_info=True)
 
 
+def _restic_unlock_stale() -> None:
+    """Remove stale restic locks before forget/prune.
+
+    ``restic unlock`` without ``--remove-all`` only removes locks restic
+    considers stale (e.g. left by a killed run in this container), never a
+    lock held by a live process. Failure is non-fatal: prune will report it.
+    """
+    log.info("Removing stale restic locks")
+    result = run_cmd(["restic", "unlock"], check=False)
+    if result.returncode != 0:
+        log.warning("Restic unlock failed", extra={"stderr": result.stderr.strip()})
+        return
+    log.info("Restic unlock completed", extra={"output": result.stdout.strip()})
+
+
+def _is_lock_error(stderr: str) -> bool:
+    """Return True if restic stderr reports a repository lock conflict."""
+    lowered = stderr.lower()
+    return "already locked" in lowered or "unable to create lock" in lowered
+
+
+def _parse_lock_holder(stderr: str) -> str | None:
+    """Extract the lock holder (text after 'already locked by') from restic stderr."""
+    marker = "already locked by"
+    idx = stderr.find(marker)
+    if idx == -1:
+        return None
+    return stderr[idx + len(marker) :].strip().splitlines()[0] or None
+
+
 def restic_prune(config: Config) -> bool:
     """Prune old backups according to retention policy."""
     if config.dry_run:
@@ -417,6 +447,7 @@ def restic_prune(config: Config) -> bool:
             "keep_monthly": config.retention.monthly,
         },
     )
+    _restic_unlock_stale()
     result = run_cmd(
         [
             "restic",
@@ -433,7 +464,13 @@ def restic_prune(config: Config) -> bool:
     )
 
     if result.returncode != 0:
-        log.warning("Restic prune failed", extra={"stderr": result.stderr.strip()})
+        stderr = result.stderr.strip()
+        extra: dict[str, object] = {"stderr": stderr}
+        if _is_lock_error(stderr):
+            extra["lock_holder"] = _parse_lock_holder(stderr)
+            log.warning("Restic prune failed: repository is locked", extra=extra)
+        else:
+            log.warning("Restic prune failed", extra=extra)
         return False
 
     log.info("Prune completed")

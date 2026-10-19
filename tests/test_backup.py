@@ -367,6 +367,49 @@ class TestResticPrune:
         assert f"--keep-monthly={default_config.retention.monthly}" in cmd
 
 
+class TestResticPruneLock:
+    def test_unlock_runs_before_forget_without_remove_all(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        mock_subprocess.return_value.returncode = 0
+        restic_prune(default_config)
+        cmds = [c[0][0] for c in mock_subprocess.call_args_list]
+        assert cmds[0] == ["restic", "unlock"]
+        assert cmds[1][:2] == ["restic", "forget"]
+        assert all("--remove-all" not in c for c in cmds)
+
+    def test_unlock_failure_does_not_block_prune(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=1, stdout="", stderr="unlock error"),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+        assert restic_prune(default_config) is True
+        assert mock_subprocess.call_count == 2
+
+    def test_lock_failure_logs_holder(
+        self,
+        mock_subprocess: MagicMock,
+        default_config: Config,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stderr = "unable to create lock in backend: repository is already locked by PID 1 on abc by root (UID 0)"
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr=stderr),
+        ]
+        with caplog.at_level("WARNING"):
+            assert restic_prune(default_config) is False
+        record = next(r for r in caplog.records if "locked" in r.getMessage())
+        assert record.lock_holder == "PID 1 on abc by root (UID 0)"  # type: ignore[attr-defined]
+
+    def test_dry_run_does_not_unlock(self, mock_subprocess: MagicMock) -> None:
+        config = Config(vault_path="/vault", state_dir="/state", dry_run=True)
+        restic_prune(config)
+        assert mock_subprocess.call_count == 0
+
+
 class TestGetCurrentBranch:
     def test_returns_branch_name(self, mock_subprocess: MagicMock) -> None:
         mock_subprocess.return_value.stdout = "master\n"

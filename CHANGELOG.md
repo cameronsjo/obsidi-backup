@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `restic prune` never succeeded after a killed run: stale repository locks
+  from the same container were never cleared. The prune step now runs
+  `restic unlock` (stale locks only, never `--remove-all`) first, and logs the
+  lock holder if forget/prune still fails on a lock.
+- Watcher re-triggered a backup every debounce period: watchdog >= 5 emits
+  read-only `opened` / `closed_no_write` events, and the backup run's own
+  `git status` / `git add` reads produced them. These events are now ignored.
 - Reap orphaned git subprocesses with tini as the container's PID 1, avoiding
   zombie accumulation during long-running backups.
 - Server-side rebase loop when `.claude/` working tree drifts from origin
