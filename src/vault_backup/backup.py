@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import urllib.request
 from dataclasses import dataclass
@@ -351,6 +352,7 @@ def restic_backup(config: Config, vault_path: Path) -> bool:
         log.info("[DRY RUN] Would run restic backup")
         return True
 
+    _restic_unlock_stale()
     log.info("Starting restic backup", extra={"vault_path": str(vault_path)})
     result = run_cmd(
         [
@@ -403,6 +405,44 @@ def _write_state(path: Path, value: str) -> None:
         log.warning("Failed to write state file", extra={"path": str(path)}, exc_info=True)
 
 
+def _restic_unlock_stale() -> None:
+    """Remove stale restic locks before a repository operation.
+
+    ``restic unlock`` without ``--remove-all`` removes only locks restic
+    considers stale: same hostname and the PID is not alive locally, or any
+    host and the lock was not refreshed for 30 minutes. Caveats: after a
+    container restart the hostname changes (container id), so a killed run's
+    lock clears only after the 30 minute rule; and two containers sharing a
+    hostname would look dead to each other's PID check, so pin distinct
+    hostnames on a shared repo. Failure is non-fatal: the operation that
+    follows reports any remaining lock.
+    """
+    log.info("Removing stale restic locks")
+    result = run_cmd(["restic", "unlock"], check=False)
+    if result.returncode != 0:
+        log.warning("Restic unlock failed", extra={"stderr": result.stderr.strip()})
+        return
+    log.info("Restic unlock completed", extra={"output": result.stdout.strip()})
+
+
+def _is_lock_error(stderr: str) -> bool:
+    """Return True if restic stderr reports a repository lock conflict."""
+    lowered = stderr.lower()
+    return "already locked" in lowered or "unable to create lock" in lowered
+
+
+_LOCK_HOLDER_RE = re.compile(r"already locked (?:exclusively )?by (.+)")
+
+
+def _parse_lock_holder(stderr: str) -> str | None:
+    """Extract the lock holder (text after 'already locked [exclusively] by')."""
+    match = _LOCK_HOLDER_RE.search(stderr)
+    if match is None:
+        return None
+    holder = match.group(1).strip()
+    return holder or None
+
+
 def restic_prune(config: Config) -> bool:
     """Prune old backups according to retention policy."""
     if config.dry_run:
@@ -417,6 +457,7 @@ def restic_prune(config: Config) -> bool:
             "keep_monthly": config.retention.monthly,
         },
     )
+    _restic_unlock_stale()
     result = run_cmd(
         [
             "restic",
@@ -433,7 +474,13 @@ def restic_prune(config: Config) -> bool:
     )
 
     if result.returncode != 0:
-        log.warning("Restic prune failed", extra={"stderr": result.stderr.strip()})
+        stderr = result.stderr.strip()
+        extra: dict[str, object] = {"stderr": stderr}
+        if _is_lock_error(stderr):
+            extra["lock_holder"] = _parse_lock_holder(stderr)
+            log.warning("Restic prune failed: repository is locked", extra=extra)
+        else:
+            log.warning("Restic prune failed", extra=extra)
         return False
 
     log.info("Prune completed")

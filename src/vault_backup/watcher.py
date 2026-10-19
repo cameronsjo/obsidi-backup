@@ -33,6 +33,11 @@ class DebouncedHandler(FileSystemEventHandler):
         ".obsidian/workspace-mobile.json",
     }
 
+    # Read-only inotify events (emitted by watchdog >= 5). The backup run itself
+    # reads vault files (git status/add), which emits these; counting them
+    # re-triggers a backup after every run. They still refresh last_watcher_event.
+    IGNORE_EVENT_TYPES = {"opened", "closed_no_write"}
+
     def __init__(
         self,
         debounce_seconds: int,
@@ -87,6 +92,10 @@ class DebouncedHandler(FileSystemEventHandler):
         # alive even when it only writes ephemeral metadata that we filter out
         # for commit purposes (workspace.json, .git internals, etc.).
         (self.state_dir / "last_watcher_event").write_text(str(int(time.time())))
+
+        # Read-only events (our own git/restic reads) prove liveness but are not changes.
+        if event.event_type in self.IGNORE_EVENT_TYPES:
+            return
 
         if self._should_ignore(event.src_path):
             return

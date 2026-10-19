@@ -66,6 +66,46 @@ class TestDebouncedHandlerIgnore:
 
 
 class TestDebouncedHandlerEvents:
+    @pytest.mark.parametrize("event_type", ["opened", "closed_no_write"])
+    def test_read_only_events_do_not_schedule_backup(
+        self, tmp_state_dir: Path, event_type: str
+    ) -> None:
+        """git status/add reading files during a backup run must not re-trigger it."""
+        handler = DebouncedHandler(
+            debounce_seconds=1,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        event = MagicMock()
+        event.is_directory = False
+        event.event_type = event_type
+        event.src_path = "/vault/notes/daily.md"
+        handler.on_any_event(event)
+        assert handler._timer is None
+        assert handler._event_count == 0
+        # Liveness still means "any event"
+        assert (tmp_state_dir / "last_watcher_event").exists()
+
+    @pytest.mark.parametrize("event_type", ["modified", "created", "closed", "moved"])
+    def test_write_events_still_schedule_backup(
+        self, tmp_state_dir: Path, event_type: str
+    ) -> None:
+        handler = DebouncedHandler(
+            debounce_seconds=60,
+            on_changes=MagicMock(),
+            state_dir=tmp_state_dir,
+        )
+        event = MagicMock()
+        event.is_directory = False
+        event.event_type = event_type
+        event.src_path = "/vault/notes/daily.md"
+        event.dest_path = "/vault/notes/renamed.md"
+        try:
+            handler.on_any_event(event)
+            assert handler._event_count == 1
+        finally:
+            handler.cancel()
+
     def test_directory_events_ignored(self, tmp_state_dir: Path) -> None:
         callback = MagicMock()
         handler = DebouncedHandler(
