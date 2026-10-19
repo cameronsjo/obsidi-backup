@@ -18,12 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `restic prune` never succeeded after a killed run: stale repository locks
-  from the same container were never cleared. The prune step now runs
-  `restic unlock` (stale locks only, never `--remove-all`) first, and logs the
-  lock holder if forget/prune still fails on a lock.
+  were never cleared. `restic unlock` (never `--remove-all`) now runs before
+  `restic backup` and before forget/prune, and the lock holder is logged if
+  prune still fails on a lock. Restic treats a lock as stale when the hostname
+  matches and the PID is dead, or when any host's lock has not been refreshed
+  for 30 minutes. After a container restart the hostname changes, so a killed
+  run's lock clears only after 30 minutes.
 - Watcher re-triggered a backup every debounce period: watchdog >= 5 emits
   read-only `opened` / `closed_no_write` events, and the backup run's own
-  `git status` / `git add` reads produced them. These events are now ignored.
+  `git status` / `git add` reads produced them. These events no longer
+  schedule a backup (they still refresh `last_watcher_event`). Raised the
+  `watchdog` floor to 5.
 - Reap orphaned git subprocesses with tini as the container's PID 1, avoiding
   zombie accumulation during long-running backups.
 - Server-side rebase loop when `.claude/` working tree drifts from origin

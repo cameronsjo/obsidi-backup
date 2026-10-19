@@ -83,8 +83,13 @@ class TestDebouncedHandlerEvents:
         handler.on_any_event(event)
         assert handler._timer is None
         assert handler._event_count == 0
+        # Liveness still means "any event"
+        assert (tmp_state_dir / "last_watcher_event").exists()
 
-    def test_modified_event_still_schedules_backup(self, tmp_state_dir: Path) -> None:
+    @pytest.mark.parametrize("event_type", ["modified", "created", "closed", "moved"])
+    def test_write_events_still_schedule_backup(
+        self, tmp_state_dir: Path, event_type: str
+    ) -> None:
         handler = DebouncedHandler(
             debounce_seconds=60,
             on_changes=MagicMock(),
@@ -92,8 +97,9 @@ class TestDebouncedHandlerEvents:
         )
         event = MagicMock()
         event.is_directory = False
-        event.event_type = "modified"
+        event.event_type = event_type
         event.src_path = "/vault/notes/daily.md"
+        event.dest_path = "/vault/notes/renamed.md"
         try:
             handler.on_any_event(event)
             assert handler._event_count == 1

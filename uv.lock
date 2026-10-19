@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -240,7 +240,7 @@ requires-dist = [
     { name = "python-json-logger", specifier = ">=4.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "sentry-sdk", specifier = ">=2.0.0" },
-    { name = "watchdog", specifier = ">=4.0.0" },
+    { name = "watchdog", specifier = ">=5.0.0" },
 ]
 provides-extras = ["dev"]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import urllib.request
 from dataclasses import dataclass
@@ -351,6 +352,7 @@ def restic_backup(config: Config, vault_path: Path) -> bool:
         log.info("[DRY RUN] Would run restic backup")
         return True
 
+    _restic_unlock_stale()
     log.info("Starting restic backup", extra={"vault_path": str(vault_path)})
     result = run_cmd(
         [
@@ -404,11 +406,16 @@ def _write_state(path: Path, value: str) -> None:
 
 
 def _restic_unlock_stale() -> None:
-    """Remove stale restic locks before forget/prune.
+    """Remove stale restic locks before a repository operation.
 
-    ``restic unlock`` without ``--remove-all`` only removes locks restic
-    considers stale (e.g. left by a killed run in this container), never a
-    lock held by a live process. Failure is non-fatal: prune will report it.
+    ``restic unlock`` without ``--remove-all`` removes only locks restic
+    considers stale: same hostname and the PID is not alive locally, or any
+    host and the lock was not refreshed for 30 minutes. Caveats: after a
+    container restart the hostname changes (container id), so a killed run's
+    lock clears only after the 30 minute rule; and two containers sharing a
+    hostname would look dead to each other's PID check, so pin distinct
+    hostnames on a shared repo. Failure is non-fatal: the operation that
+    follows reports any remaining lock.
     """
     log.info("Removing stale restic locks")
     result = run_cmd(["restic", "unlock"], check=False)
@@ -424,13 +431,16 @@ def _is_lock_error(stderr: str) -> bool:
     return "already locked" in lowered or "unable to create lock" in lowered
 
 
+_LOCK_HOLDER_RE = re.compile(r"already locked (?:exclusively )?by (.+)")
+
+
 def _parse_lock_holder(stderr: str) -> str | None:
-    """Extract the lock holder (text after 'already locked by') from restic stderr."""
-    marker = "already locked by"
-    idx = stderr.find(marker)
-    if idx == -1:
+    """Extract the lock holder (text after 'already locked [exclusively] by')."""
+    match = _LOCK_HOLDER_RE.search(stderr)
+    if match is None:
         return None
-    return stderr[idx + len(marker) :].strip().splitlines()[0] or None
+    holder = match.group(1).strip()
+    return holder or None
 
 
 def restic_prune(config: Config) -> bool:

@@ -404,6 +404,51 @@ class TestResticPruneLock:
         record = next(r for r in caplog.records if "locked" in r.getMessage())
         assert record.lock_holder == "PID 1 on abc by root (UID 0)"  # type: ignore[attr-defined]
 
+    def test_exclusive_lock_wording_parses_holder(
+        self,
+        mock_subprocess: MagicMock,
+        default_config: Config,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        stderr = "repository is already locked exclusively by PID 7 on host9 by root (UID 0)"
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr=stderr),
+        ]
+        with caplog.at_level("WARNING"):
+            assert restic_prune(default_config) is False
+        record = next(r for r in caplog.records if "locked" in r.getMessage())
+        assert record.lock_holder == "PID 7 on host9 by root (UID 0)"  # type: ignore[attr-defined]
+
+    def test_empty_holder_after_marker_does_not_raise(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr="repository is already locked by "),
+        ]
+        assert restic_prune(default_config) is False
+
+    def test_backup_unlocks_before_restic_backup(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        mock_subprocess.return_value.stdout = "snapshot ab12cd34 saved"
+        assert restic_backup(default_config, Path(default_config.vault_path)) is True
+        cmds = [c[0][0] for c in mock_subprocess.call_args_list]
+        assert cmds[0][:2] == ["restic", "snapshots"]
+        assert cmds[1] == ["restic", "unlock"]
+        assert cmds[2][:2] == ["restic", "backup"]
+
+    def test_backup_proceeds_when_unlock_fails(
+        self, mock_subprocess: MagicMock, default_config: Config
+    ) -> None:
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=1, stdout="", stderr="unlock error"),
+            MagicMock(returncode=0, stdout="snapshot ab12cd34 saved", stderr=""),
+        ]
+        assert restic_backup(default_config, Path(default_config.vault_path)) is True
+
     def test_dry_run_does_not_unlock(self, mock_subprocess: MagicMock) -> None:
         config = Config(vault_path="/vault", state_dir="/state", dry_run=True)
         restic_prune(config)
